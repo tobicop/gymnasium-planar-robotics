@@ -69,11 +69,11 @@ import gymnasium as gym
 from gymnasium import logger
 import mujoco
 from gymnasium_planar_robotics import BasicPlanarRoboticsSingleAgentEnv
-from gymnasium_planar_robotics.utils import mujoco_utils
+from gymnasium_planar_robotics.utils import mujoco_utils, rotations_utils
 from gymnasium_planar_robotics import Matplotlib2DViewer
 
 
-class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
+class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
     """A simple planning environment.
 
     :param layout_tiles: a numpy array of shape (num_tiles_x, num_tiles_y) indicating where to add a tile (use 1 to add a tile
@@ -540,3 +540,22 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             wall_collisions = np.array([info['wall_collision']])
 
         return batch_size, mover_collisions, wall_collisions
+
+
+    def billiard_episode(self) -> tuple[bool, bool]:
+
+        terminated = False
+
+        #TODO: implement for multiple vectors
+
+        # initial acceleration vector
+        action = self.action_space.sample()
+        # overwrite with acceleration vector with magnitude a_max
+        action_out = rotations_utils.unit_vector(action[:2]) * self.a_max
+        action[:2] = action_out
+
+        while not terminated:
+            observation, reward, terminated, truncated, info = self.step(action)
+
+        return bool(info['mover_collision']), bool(info['wall_collision'])
+        
