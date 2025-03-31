@@ -542,19 +542,29 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         return batch_size, mover_collisions, wall_collisions
 
 
-    def billiard_episode(self) -> tuple[bool, bool]:
+    def billiard_episode(self, active_movers: int | None = None) -> tuple[bool, bool]:
+        # use number of movers (max) as the default value if active_movers is None
+        if active_movers is None:
+            active_movers = self.num_movers
+        # ensure a valid number of movers to be in "billiard mode"
+        elif active_movers < 0 or active_movers > self.num_movers:
+            raise ValueError("Invalid number of active movers specified")
+
+        # initialize all movers with zero dynamics
+        action = np.zeros(2 * self.num_movers)
+        # get action vector with random (valid) acceleration values
+        init_acc = self.action_space.sample()
+
+        # give every specified mover a random initial acceleration with magnitude a_max
+        for mover_idx in range(active_movers):
+            # scale respective acceleration vector to magnitude a_max (maximum acceleration)
+            action_out = rotations_utils.unit_vector(init_acc[mover_idx*2:(mover_idx+1)*2]) * self.a_max
+            # overwrite vector of respective mover
+            action[mover_idx*2:(mover_idx+1)*2] = action_out
 
         terminated = False
-
-        #TODO: implement for multiple vectors
-
-        # initial acceleration vector
-        action = self.action_space.sample()
-        # overwrite with acceleration vector with magnitude a_max
-        action_out = rotations_utils.unit_vector(action[:2]) * self.a_max
-        action[:2] = action_out
-
         while not terminated:
+            #TODO: implement changing directions using info
             observation, reward, terminated, truncated, info = self.step(action)
 
         return bool(info['mover_collision']), bool(info['wall_collision'])
