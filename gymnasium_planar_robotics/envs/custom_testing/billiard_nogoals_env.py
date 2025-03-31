@@ -542,6 +542,42 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         return batch_size, mover_collisions, wall_collisions
 
 
+    # output: array with shape(mover_idx , [min_x_closest, min_y_closest, max_x_closest, max_y_closest])
+    # 1 for closest wall
+    # ONLY FOR BOUNDING SPHERES (not rectangles)
+    def get_closest_wall(self) -> np.ndarray:
+        """ Compute the distance of each mover to the four boundary walls (min x, min y, max x, max y). Then identify the
+        closest wall for each mover and return a one-hot encoded array indicating which wall is closest.
+
+        Example output:
+            ```
+            [[1. 0. 0. 0.]  # First mover is closest to min_x
+            [0. 0. 0. 1.]] # Second mover is closest to max_y
+            ```
+
+        **Important:**
+        - This function is **only applicable to circular bounding shapes** (not rectangular ones).
+        - It assumes that `self.c_shape == 'circle'` to ensure correct behavior.
+
+        :return: a (num_movers, 4) array where each row corresponds to a mover, and each column (min_x, min_y, max_x, max_y)
+        contains a 1 if that wall is the closest to the mover, 0 otherwise.
+        """
+        assert(self.c_shape == 'circle')
+
+        mover_pos = self.get_mover_qpos_arr(mover_names=self.mover_names, add_noise=False)[:,0:2]
+
+        # shape: (num_movers, [dist_min_x, dist_min_y, dist_max_x, dist_max_y])
+        distances = np.concatenate((mover_pos - self.min_xy_pos, self.max_xy_pos - mover_pos), axis=1)
+
+        # find closest wall index per mover
+        min_idx_per_mover = np.argmin(distances, axis=1)
+
+        # create one-hot encoded array where the closest wall is 1, the others 0
+        closest_wall = np.zeros_like(distances)
+        closest_wall[np.arange(self.num_movers), min_idx_per_mover] = 1
+
+        return closest_wall
+
     def billiard_episode(self, active_movers: int | None = None) -> tuple[bool, bool]:
         # use number of movers (max) as the default value if active_movers is None
         if active_movers is None:
