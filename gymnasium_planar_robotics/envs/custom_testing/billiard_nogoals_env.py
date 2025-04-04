@@ -163,10 +163,6 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
     ) -> None:
         # for billiard mode
         self.collision_boost = np.full(num_movers, False)
-        #TODO: remove any of these?
-        self.wall_collision = False
-        self.wall_collision_new = False
-        
 
         self.learn_jerk = learn_jerk
 
@@ -355,20 +351,6 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
                 - whether the truncation condition is satisfied
                 - auxiliary information contained in the 'info' dictionary
         """
-
-        #TODO: remove? maybe unnecessary
-        # true if wall collision is detected for any mover
-        self.wall_collision_new = self.check_wall_collision(
-                mover_names=self.mover_names,
-                c_size=self.c_size,
-                add_safety_offset=False,
-                mover_qpos=None,
-                add_qpos_noise=True,
-        ).any()
-
-        if self.wall_collision_new:
-            print(f"Collision! (proper check)")
-
         # billiard mode: boost dynamics while collision
         action_boost = self._boost_dynamics(action)
 
@@ -380,8 +362,7 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
             # render every cycle for a smooth visualization of the movement
             if self.render_every_cycle:
                 self.render()
-            # BILLIARD MODE: do not check wall collisions here
-            wall_collision = self.wall_collision
+            # Billiard mode: "proper" wall collision skipped
             # check mover collision every cycle to ensure that the collisions are detected and all intermediate
             # mover positions are valid and without collisions
             mover_collision = self.check_mover_collision(
@@ -391,35 +372,14 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
                 mover_qpos=None,
                 add_qpos_noise=True,  # would also occur in a real system
             )
-            if mover_collision or wall_collision:
+            if mover_collision:
                 break
 
         self.render()
 
-        #TODO: remove?
-        # get next observation
-        observation = self._get_obs()
-        if isinstance(observation, dict) and 'achieved_goal' in observation.keys() and 'desired_goal' in observation.keys():
-            # goal-conditioned RL
-            info = self._get_info(mover_collision, wall_collision, observation['achieved_goal'], observation['desired_goal'])
-            reward = self.compute_reward(observation['achieved_goal'], observation['desired_goal'], info)
-            terminated = self.compute_terminated(observation['achieved_goal'], observation['desired_goal'], info)
-            truncated = self.compute_truncated(observation['achieved_goal'], observation['desired_goal'], info)
-        else:
-            info = self._get_info(mover_collision, wall_collision)
-            reward = self.compute_reward(info=info)
-            terminated = self.compute_terminated(info=info)
-            truncated = self.compute_truncated(info=info)
-        # check reward shape
-        if isinstance(reward, np.ndarray) and reward.shape[0] > 1:
-            logger.warn(
-                f"Unexpected shape of reward returned by 'env.compute_reward()'. Current shape is: {reward.shape}, \
-                  expected shape: (1,)"
-            )
-        elif isinstance(reward, np.ndarray) and reward.shape[0] == 1:
-            reward = reward[0]
+        info = self._get_info(mover_collision=mover_collision, wall_collision=False)
 
-        return observation, reward, terminated, truncated, info
+        return 0, 0, False, False, info
 
     def _reset_callback(self, options: dict[str, any] | None = None) -> None:
         """Reset the start and goal positions of all movers and reload the model. It is also checked whether the start positions are
@@ -706,7 +666,7 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
     # 1 for closest wall
     # ONLY FOR BOUNDING SPHERES (not rectangles)
     def get_closest_wall(self) -> np.ndarray:
-        """ Compute the distance of each mover to the four boundary walls (min x, min y, max x, max y). Then identify the
+        """Compute the distance of each mover to the four boundary walls (min x, min y, max x, max y). Then identify the
         closest wall for each mover and return a one-hot encoded array indicating which wall is closest.
 
         Example output:
@@ -739,23 +699,29 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         return closest_wall
 
     def billiard_episode(self, active_movers: int | None = None):
+        """Simulates a 'billiard mode' episode where a number of movers are initialized with random accelerations and the
+        system evolves until a collision occurs.
+
+        :param active_movers: The number of movers to activate. If None, defaults to using all available movers.
+            Must be between 0 and self.num_movers (inclusive).
+        """
         # use number of movers (max) as the default value if active_movers is None
         if active_movers is None:
             active_movers = self.num_movers
-        # ensure a valid number of movers to be in "billiard mode"
+        # validate number of active movers in "billiard mode"
         elif active_movers < 0 or active_movers > self.num_movers:
             raise ValueError("Invalid number of active movers specified")
 
         # initialize all movers with zero dynamics
         action = np.zeros(2 * self.num_movers)
 
-        # give every specified mover a random initial acceleration with magnitude a_max
+        # assign a random initial acceleration with magnitude a_max to each mover
         for mover_idx in range(active_movers):
             # get action vector with random (valid) acceleration values
             init_acc = self.action_space.sample()
-            # scale respective acceleration vector to magnitude a_max (maximum acceleration)
+            # normalize and scale respective acceleration vector to magnitude a_max (maximum acceleration)
             action_out = rotations_utils.unit_vector(init_acc[mover_idx*2:(mover_idx+1)*2]) * self.a_max
-            # overwrite vector of respective mover
+            # update vector of respective mover
             action[mover_idx*2:(mover_idx+1)*2] = action_out
 
         # action loop, terminated on mover collision
