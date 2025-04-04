@@ -161,6 +161,13 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         threshold_pos: float = 0.1,
         use_mj_passive_viewer: bool = False,
     ) -> None:
+        # for billiard mode
+        self.collision_boost = np.full(num_movers, False)
+        #TODO: remove any of these?
+        self.wall_collision = False
+        self.wall_collision_new = False
+        
+
         self.learn_jerk = learn_jerk
 
         # cam config
@@ -216,11 +223,17 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
 
         # minimum and maximum possible mover (x,y)-positions
         safety_margin = self.c_size + self.c_size_offset_wall + self.c_size_offset
-        self.min_xy_pos = np.zeros(2) + safety_margin
-        self.max_xy_pos = (
-            np.array([np.max(self.x_pos_tiles) + (self.tile_size[0] / 2), np.max(self.y_pos_tiles) + (self.tile_size[1] / 2)])
-            - safety_margin
-        )
+        self.min_xy_pos_full = np.zeros(2)
+        self.max_xy_pos_full = (np.array([
+            np.max(self.x_pos_tiles),
+            np.max(self.y_pos_tiles)
+        ]))
+        # this results in the original arrays
+        self.min_xy_pos_safe = np.zeros(2) + safety_margin
+        self.max_xy_pos_safe = self.max_xy_pos_full + (np.array([
+            (self.tile_size[0] / 2),
+            (self.tile_size[1] / 2)
+        ])) - safety_margin
 
         # minimum distance between any two goals
         if self.c_shape == 'circle':
@@ -308,6 +321,106 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         if self.render_mode is not None:
             self.viewer_collection.reload_model(self.model, self.data)
 
+    # OVERRIDE FOR BILLIARD MODE
+    def step(self, action: int | np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
+        """Execute one step of the environment's dynamics applying the given action.
+        Note that the environment executes as many MuJoCo simulation steps as the number of cycles specified for this environment
+        (``num_cycles``). The duration of one cycle is determined by the cycle time, which must be specified in the MuJoCo xml
+        string using the ``option/timestep`` parameter. The same action is applied for all cycles.
+
+        This method performs the following steps:
+
+        - check whether the dimension of the action matches the dimension of the action space
+        - if the action space does not contain the specified action, the action is clipped to the interval edges of
+          the action space
+        - call ``_step_callback(action)`` to give the user the opportunity to add more functionality
+        - execute MuJoCo simulation steps (``mj_step()``). After each simulation step, it is checked whether there are mover or wall
+          collisions. In case of a collision, mover_collision or wall_collision will be True and no further simulation
+          steps are performed, as a real system would typically stop as well due to position lag errors.
+          In addition, ``render()`` can be called after each simulation step to provide a smooth visualization of the movement
+          (set ``render_every_cycle=True``).
+          The callback ``_mujoco_step_callback(action)`` can be used to add functionality BEFORE the next simulation step is executed.
+          This can be useful, for example, to ensure velocity or acceleration limits within each cycle.
+        - call ``render()``
+        - get return values
+
+        More detailed information about the parameters and return values can be found in the Gymnasium documentation:
+        https://gymnasium.farama.org/api/env/#gymnasium.Env.step.
+
+        :param action: the action to apply
+        :return:
+                - the next observation
+                - the immediate reward for taking the action
+                - whether a terminal state is reached
+                - whether the truncation condition is satisfied
+                - auxiliary information contained in the 'info' dictionary
+        """
+
+        #TODO: remove? maybe unnecessary
+        # true if wall collision is detected for any mover
+        self.wall_collision_new = self.check_wall_collision(
+                mover_names=self.mover_names,
+                c_size=self.c_size,
+                add_safety_offset=False,
+                mover_qpos=None,
+                add_qpos_noise=True,
+        ).any()
+
+        if self.wall_collision_new:
+            print(f"Collision! (proper check)")
+
+        # billiard mode: boost dynamics while collision
+        action_boost = self._boost_dynamics(action)
+
+        # integration and collision check
+        for _ in range(0, self.num_cycles):
+            self._mujoco_step_callback(action_boost)
+            # integration
+            mujoco.mj_step(self.model, self.data, nstep=1)
+            # render every cycle for a smooth visualization of the movement
+            if self.render_every_cycle:
+                self.render()
+            # BILLIARD MODE: do not check wall collisions here
+            wall_collision = self.wall_collision
+            # check mover collision every cycle to ensure that the collisions are detected and all intermediate
+            # mover positions are valid and without collisions
+            mover_collision = self.check_mover_collision(
+                mover_names=self.mover_names,
+                c_size=self.c_size,
+                add_safety_offset=False,
+                mover_qpos=None,
+                add_qpos_noise=True,  # would also occur in a real system
+            )
+            if mover_collision or wall_collision:
+                break
+
+        self.render()
+
+        #TODO: remove?
+        # get next observation
+        observation = self._get_obs()
+        if isinstance(observation, dict) and 'achieved_goal' in observation.keys() and 'desired_goal' in observation.keys():
+            # goal-conditioned RL
+            info = self._get_info(mover_collision, wall_collision, observation['achieved_goal'], observation['desired_goal'])
+            reward = self.compute_reward(observation['achieved_goal'], observation['desired_goal'], info)
+            terminated = self.compute_terminated(observation['achieved_goal'], observation['desired_goal'], info)
+            truncated = self.compute_truncated(observation['achieved_goal'], observation['desired_goal'], info)
+        else:
+            info = self._get_info(mover_collision, wall_collision)
+            reward = self.compute_reward(info=info)
+            terminated = self.compute_terminated(info=info)
+            truncated = self.compute_truncated(info=info)
+        # check reward shape
+        if isinstance(reward, np.ndarray) and reward.shape[0] > 1:
+            logger.warn(
+                f"Unexpected shape of reward returned by 'env.compute_reward()'. Current shape is: {reward.shape}, \
+                  expected shape: (1,)"
+            )
+        elif isinstance(reward, np.ndarray) and reward.shape[0] == 1:
+            reward = reward[0]
+
+        return observation, reward, terminated, truncated, info
+
     def _reset_callback(self, options: dict[str, any] | None = None) -> None:
         """Reset the start and goal positions of all movers and reload the model. It is also checked whether the start positions are
         collision-free (mover and wall collisions) and whether the new goals can be reached without mover or wall collisions.
@@ -354,12 +467,54 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
                         + f'No valid configuration found within {counter} trails. Consider choosing fewer movers or more tiles.'
                     )
 
-                start_qpos[:, :2] = self.np_random.uniform(low=self.min_xy_pos, high=self.max_xy_pos, size=(self.num_movers, 2))
+                start_qpos[:, :2] = self.np_random.uniform(low=self.min_xy_pos_safe, high=self.max_xy_pos_safe, size=(self.num_movers, 2))
                 if init_collision_check(start_qpos):
                     break
 
         # reload model with new start pos and goal pos
         self.reload_model(mover_start_xy_pos=start_qpos[:, :2])
+
+    
+    def _boost_dynamics(self, action: int | np.ndarray) -> None:
+        """Boosts the dynamics of movers when they hit positional boundaries."""
+
+        # acceleration value/factor that is sufficient for "reflecting" the mover
+        ACC_BOOST_FACTOR = 50   # 500 seemed a good boost acceleration value
+
+        # reshape for easier access (original array only gets updated with flipped vectors after boosting)
+        action = action.reshape((self.num_movers, 2))
+        # contains overwritten boosted acceleration values
+        action_boost = action.copy()
+
+        # get mover positions
+        mover_pos = self.get_mover_qpos_arr(mover_names=self.mover_names, add_noise=False)[:,0:2]
+
+        for idx_mover in range(self.num_movers):
+            # skip mover if it was boosted in the last step
+            if self.collision_boost[idx_mover]:
+                self.collision_boost[idx_mover] = False
+                continue
+
+            for axis in range(2):
+                pos = mover_pos[idx_mover][axis]
+
+                min_bound = self.min_xy_pos_full[axis] + self.c_size
+                max_bound = self.max_xy_pos_full[axis]
+
+                if pos < min_bound or pos > max_bound:
+                    direction = 1 if pos < min_bound else -1    # for positive or negative sign
+
+                    # override with positive boosted dynamics component
+                    action_boost[idx_mover][axis] = abs(action_boost[idx_mover][axis]) * ACC_BOOST_FACTOR * direction
+                    
+                    # flip vector of input action (used again after boost)
+                    action[idx_mover][axis] = abs(action[idx_mover][axis]) * direction
+                    
+                    self.collision_boost[idx_mover] = True
+
+        # restore original shape
+        action = action.flatten()
+        return action_boost.flatten()
 
     def _mujoco_step_callback(self, action: np.ndarray) -> None:
         """Apply the next action, i.e. it sets the jerk or acceleration, ensuring the minimum and maximum velocity and acceleration
@@ -373,6 +528,7 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
             mover_name = self.mover_names[idx_mover]
             vel = self.get_mover_qvel(mover_name=mover_name, add_noise=True)[:2]
 
+            # IMPORTANT: billiard mode not implemented for learn_jeark = True !
             if self.learn_jerk:
                 acc = self.get_mover_qacc(mover_name=mover_name, add_noise=False)[:2]
                 next_acc_tmp, next_jerk = self.ensure_max_dyn_val(
@@ -383,7 +539,11 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
                     next_jerk = (next_acc - acc) / self.cycle_time
                 ctrl = next_jerk.copy()
             else:
-                _, next_acc = self.ensure_max_dyn_val(current_values=vel, max_value=self.v_max, next_derivs=action[idx_mover, :])
+                if self.collision_boost[idx_mover]:
+                    # skip dynamics check if boosted
+                    next_acc = np.array([action[idx_mover]])
+                else:
+                    _, next_acc = self.ensure_max_dyn_val(current_values=vel, max_value=self.v_max, next_derivs=action[idx_mover, :])                  
                 ctrl = next_acc.copy()
             mujoco_utils.set_actuator_ctrl(
                 model=self.model, data=self.data, actuator_name=self.mover_actuator_x_names[idx_mover], value=ctrl[0, 0]
@@ -567,7 +727,7 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         mover_pos = self.get_mover_qpos_arr(mover_names=self.mover_names, add_noise=False)[:,0:2]
 
         # shape: (num_movers, [dist_min_x, dist_min_y, dist_max_x, dist_max_y])
-        distances = np.concatenate((mover_pos - self.min_xy_pos, self.max_xy_pos - mover_pos), axis=1)
+        distances = np.concatenate((mover_pos - self.min_xy_pos_safe, self.max_xy_pos_safe - mover_pos), axis=1)
 
         # find closest wall index per mover
         min_idx_per_mover = np.argmin(distances, axis=1)
@@ -578,7 +738,7 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
 
         return closest_wall
 
-    def billiard_episode(self, active_movers: int | None = None) -> tuple[bool, bool]:
+    def billiard_episode(self, active_movers: int | None = None):
         # use number of movers (max) as the default value if active_movers is None
         if active_movers is None:
             active_movers = self.num_movers
@@ -588,20 +748,18 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
 
         # initialize all movers with zero dynamics
         action = np.zeros(2 * self.num_movers)
-        # get action vector with random (valid) acceleration values
-        init_acc = self.action_space.sample()
 
         # give every specified mover a random initial acceleration with magnitude a_max
         for mover_idx in range(active_movers):
+            # get action vector with random (valid) acceleration values
+            init_acc = self.action_space.sample()
             # scale respective acceleration vector to magnitude a_max (maximum acceleration)
             action_out = rotations_utils.unit_vector(init_acc[mover_idx*2:(mover_idx+1)*2]) * self.a_max
             # overwrite vector of respective mover
             action[mover_idx*2:(mover_idx+1)*2] = action_out
 
-        terminated = False
-        while not terminated:
-            #TODO: implement changing directions using info
-            observation, reward, terminated, truncated, info = self.step(action)
-
-        return bool(info['mover_collision']), bool(info['wall_collision'])
-        
+        # action loop, terminated on mover collision
+        mover_collision = False
+        while not mover_collision:
+            _, _, terminated, truncated, info = self.step(action)
+            mover_collision = bool(info['mover_collision'])

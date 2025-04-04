@@ -1525,9 +1525,6 @@ class BasicPlanarRoboticsSingleAgentEnv(BasicPlanarRoboticsEnv, gym.Env, ABC):
                 logger.warn(f'Action {action} not in action space. Will clip invalid values to interval edges.')
                 action = np.clip(action, self.action_space.low, self.action_space.high)
 
-        # custom callback to add more functionality
-        self._step_callback(action)
-
         # integration and collision check
         for _ in range(0, self.num_cycles):
             self._mujoco_step_callback(action)
