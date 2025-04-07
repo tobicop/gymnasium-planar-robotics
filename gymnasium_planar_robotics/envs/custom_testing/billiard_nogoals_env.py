@@ -351,6 +351,11 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
                 - whether the truncation condition is satisfied
                 - auxiliary information contained in the 'info' dictionary
         """
+        # if manual control is enabled, overwrite acceleration values of respective mover
+        if self.matplotlib_2D_viewer.manual_control_active:
+            manual_action, mover_idx = self.matplotlib_2D_viewer.manual_controller.get_action_manual()
+            action[mover_idx*2:(mover_idx+1)*2] = manual_action
+
         # billiard mode: boost dynamics while collision
         action_boost = self._boost_dynamics(action)
 
