@@ -385,6 +385,7 @@ class Matplotlib2DViewer:
         self.cs = []
         self.cs_offset = []
         self.arrows = []
+        self.stop_arrows = []
         self.goals = []
 
          # register key press/release event callbacks
@@ -420,11 +421,33 @@ class Matplotlib2DViewer:
         :param mover_goals: None or a numpy array of shape (num_movers,2) containing the (x,y) goal positions of each mover, defaults
             to None. If set to None, no goals are displayed.
         """
+         #TODO: change location and/or pass as argument?
+        ACC_MAX = 10.0
+
+        #TODO: move somewhere else?
+        def get_stop_dist(mover_velocity: np.ndarray) -> np.ndarray:
+            """Compute the (minimum) stopping distance and stopping vector for a moving object based on its velocity.
+
+            The stopping distance is calculated using the formula:
+                d_stop = -v² / (2 * a_max)
+            where `v` is the velocity, and `a_max` is the maximum (de)acceleration. The function assumes that
+            the (de)acceleration vector is antiparallel to the velocity and has a magnitude of `a_max` (full stop).
+
+            :param mover_velocity: A numpy array representing the velocity vector of the mover (e.g., [vx, vy]).
+            :return: A tuple containing:
+                - dist_stop_norm: The scalar stopping distance (magnitude).
+                - dist_stop_vec: A numpy array representing the stopping vector.
+            """
+            dist_stop_norm = (np.linalg.norm(mover_velocity)**2) / (2 * ACC_MAX)
+            dist_stop_vec = dist_stop_norm * rotations_utils.unit_vector(mover_velocity)
+            return dist_stop_norm, dist_stop_vec
+
         for i in range(0, len(self.movers)):
             self.movers[i].remove()
             self.cs[i].remove()
             self.cs_offset[i].remove()
             self.arrows[i].remove()
+            self.stop_arrows[i].remove()
             if len(self.goals) > 0:
                 self.goals[i].remove()
         if self.highlight_marker is not None:
@@ -435,6 +458,7 @@ class Matplotlib2DViewer:
         self.cs = []
         self.cs_offset = []
         self.arrows = []
+        self.stop_arrows = []
         self.goals = []
 
         for idx_mover in range(0, self.num_movers):
@@ -481,6 +505,20 @@ class Matplotlib2DViewer:
                 zorder=1.5,
             )
             self.arrows.append(self.axs.add_patch(arrow))
+
+            _, stop_dist_vec = get_stop_dist(mover_qvel[idx_mover][:2])
+            stop_arrow = Arrow(
+                x=mover_qpos[idx_mover, 1],
+                y=mover_qpos[idx_mover, 0],
+                dx=stop_dist_vec[1],
+                dy=stop_dist_vec[0],
+                width=0.06,
+                facecolor='black',
+                edgecolor='black',
+                lw=0.06,
+                zorder=1.5,
+            )
+            self.stop_arrows.append(self.axs.add_patch(stop_arrow))
 
             if self.c_shape == 'circle':
                 cs = Circle(
