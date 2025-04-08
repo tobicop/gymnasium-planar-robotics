@@ -399,6 +399,7 @@ class Matplotlib2DViewer:
             
             C:           toggle controls
             M:          next mover
+            B:           brake/reverse
             ←→↑↓:  mover direction
         """
         self.figure.text(-0.05, 0.5, controls_legend_text, fontsize=10, ha='left', va='center')
@@ -609,6 +610,7 @@ class ManualControl:
     def __init__(self, viewer: 'Matplotlib2DViewer') -> None:
         self.viewer = viewer
         self.keys_pressed = set()
+        self.brake = False
         self.reset_kinematics()
 
     def _on_key_press(self, event):
@@ -627,6 +629,8 @@ class ManualControl:
                 self.viewer.increment_controlled_mover()
             case 'c':   # toggle manual control (on/off)
                 self.viewer.toggle_manual_control()
+            case 'b':   # brake (reverse acceleration vector)
+                self.brake = True
         
     def _on_key_release(self, event):
         """Callback for key release events. Removes the released key from the set of active keys.
@@ -655,6 +659,12 @@ class ManualControl:
             self.current_acc[1] = -self.ACCELERATION
         elif 'right' in self.keys_pressed:
             self.current_acc[1] = self.ACCELERATION
+
+    def get_brake_state(self) -> int:
+        """Get and reset brake status (for reversing acceleration vector)."""
+        brake_status = self.brake
+        self.brake = False
+        return brake_status
 
     def get_action_manual(self) -> np.ndarray:
         """Get the current acceleration values based on the pressed keys and the current mover index.
