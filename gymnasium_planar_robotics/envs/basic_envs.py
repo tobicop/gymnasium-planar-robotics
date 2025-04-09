@@ -272,34 +272,26 @@ class BasicPlanarRoboticsEnv:
     ###################################################
     # Collision and position validation checks        #
     ###################################################
-    def check_mover_collision(
+    def calculate_mover_distances(
         self,
         mover_names: list[str],
         c_size: float | np.ndarray,
         add_safety_offset: bool = False,
         mover_qpos: np.ndarray | None = None,
         add_qpos_noise: bool = False,
-    ) -> bool:
-        """Check whether two movers specified in ``mover_names`` collide. In case of collision shape 'box', this method takes the
-        orientation of the movers into account.
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Calculate the distances between movers and prepare collision size arrays.
 
-        :param mover_names: a list of mover names that should be checked (correspond to the body name of the mover in
-            the MuJoCo model)
+        :param mover_names: a list of mover names that should be checked
         :param c_size: the size of the collision shape of the movers
-
-            - collision_shape = 'circle':
-                use a single float value to specify the same size for all movers and a numpy array of shape (num_movers,) to specify
-                individual sizes for each mover
-            - collision_shape = 'box':
-                use a numpy array of shape (2,) to specify the same size for all movers and a numpy array of shape (num_movers,2) to
-                specify individual sizes for each mover
-        :param add_safety_offset: whether to add the size offset (can be specified using: collision_params["offset"]), defaults to
-            False. Note that the same size offset is added for both movers.
-        :param mover_qpos: the qpos of the movers specified as a numpy array of shape (num_movers,7) (x_p,y_p,z_p,w_o,x_o,y_o,z_o).
-            If set to None, the current qpos of the movers in the MuJoCo model is used; defaults to None
-        :param add_qpos_noise: whether to add Gaussian noise to the qpos of the movers, defaults to False. Only used if mover_qpos is
-            not None.
-        :return: True if the movers collide, False otherwise
+        :param add_safety_offset: whether to add the size offset, defaults to False
+        :param mover_qpos: the qpos of the movers, defaults to None
+        :param add_qpos_noise: whether to add Gaussian noise to the qpos of the movers, defaults to False
+        :return: A tuple containing:
+            - mover_dist: The distances between movers.
+            - mover_i_qpos: The qpos of the first mover in each pair.
+            - mover_j_qpos: The qpos of the second mover in each pair.
+            - c_size_arr: The collision size arrays for the movers.
         """
         if mover_qpos is None:
             mover_qpos = self.get_mover_qpos_arr(mover_names=mover_names, add_noise=add_qpos_noise)
@@ -325,14 +317,47 @@ class BasicPlanarRoboticsEnv:
             c_size_arr_j[start_idx:stop_idx, :] = c_size_arr[i + 1 :, :]
             start_idx = stop_idx
 
+        mover_dist = np.linalg.norm(mover_i_qpos[:, :2] - mover_j_qpos[:, :2], ord=2, axis=1)
+
+        return mover_dist, mover_i_qpos, mover_j_qpos, c_size_arr_i, c_size_arr_j
+
+    def check_mover_collision(
+        self,
+        mover_names: list[str],
+        c_size: float | np.ndarray,
+        add_safety_offset: bool = False,
+        mover_qpos: np.ndarray | None = None,
+        add_qpos_noise: bool = False,
+    ) -> bool:
+        """Check whether two movers specified in ``mover_names`` collide. In case of collision shape 'box', this method takes the
+        orientation of the movers into account.
+
+        :param mover_names: a list of mover names that should be checked
+        :param c_size: the size of the collision shape of the movers
+        :param add_safety_offset: whether to add the size offset, defaults to False
+        :param mover_qpos: the qpos of the movers, defaults to None
+        :param add_qpos_noise: whether to add Gaussian noise to the qpos of the movers, defaults to False
+        :return: A tuple containing:
+            - mover_dist: The distances between movers.
+            - mover_i_qpos: The qpos of the first mover in each pair.
+            - mover_j_qpos: The qpos of the second mover in each pair.
+            - c_size_arr: The collision size arrays for the movers.
+        """
+        mover_dist, mover_i_qpos, mover_j_qpos, c_size_arr_i, c_size_arr_j = self.calculate_mover_distances(
+            mover_names=mover_names,
+            c_size=c_size,
+            add_safety_offset=add_safety_offset,
+            mover_qpos=mover_qpos,
+            add_qpos_noise=add_qpos_noise,
+        )
+
         if self.c_shape == 'circle':
-            mover_collision = np.linalg.norm(mover_i_qpos[:, :2] - mover_j_qpos[:, :2], ord=2, axis=1) <= (c_size_arr_i + c_size_arr_j)
+            mover_collision = mover_dist <= (c_size_arr_i + c_size_arr_j)
         elif self.c_shape == 'box':
-            dist = np.linalg.norm(mover_i_qpos[:, :2] - mover_j_qpos[:, :2], ord=2, axis=1)
             max_size = np.max(np.concatenate((c_size_arr_i, c_size_arr_j), axis=1), axis=1)
             diag_size = np.tile(max_size, reps=(2, 1)).T
-            mask_add_check = dist <= 2 * np.linalg.norm(diag_size, ord=1, axis=1)
-            mover_collision = np.zeros(num_checks)
+            mask_add_check = mover_dist <= 2 * np.linalg.norm(diag_size, ord=1, axis=1)
+            mover_collision = np.zeros(mover_dist.shape[0])
             if mask_add_check.any():
                 mover_collision[mask_add_check] = geometry_2D_utils.check_rectangles_intersect(
                     qpos_r1=mover_i_qpos[mask_add_check, :],
