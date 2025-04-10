@@ -136,3 +136,61 @@ def check_rectangles_intersect(qpos_r1: np.ndarray, qpos_r2: np.ndarray, size_r1
 
     res = check_line_segments_intersect(p1=p1, p2=p2, q1=q1, q2=q2)
     return np.sum(res.reshape((num_checks, 16)), axis=1) >= 1
+
+def calculate_mover_distances(
+        mover_qpos: np.ndarray,
+        c_size_arr: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Calculate the distances between movers and prepare collision size arrays.
+
+    :return: A tuple containing:
+        - mover_dist: The distances between movers (flattened list of unique pairs i < j).
+        - mover_i_qpos: The qpos of the first mover in each pair.
+        - mover_j_qpos: The qpos of the second mover in each pair.
+        - c_size_arr_i: The collision size arrays for the first mover in each pair.
+        - c_size_arr_j: The collision size arrays for the second mover in each pair.
+        - mover_dist_table: Full (N x N) symmetric distance matrix with np.inf on diagonal.
+    """
+    num_movers = mover_qpos.shape[0]
+    assert mover_qpos.shape == (num_movers, 7)
+
+    num_checks = np.sum(np.arange(start=1, stop=num_movers, step=1))
+    mover_i_qpos = np.zeros((num_checks, 7))
+    mover_j_qpos = np.zeros((num_checks, 7))
+    c_size_arr_i = np.zeros((num_checks, c_size_arr.shape[1]))
+    c_size_arr_j = np.zeros((num_checks, c_size_arr.shape[1]))
+
+    # initialize full distance matrix
+    mover_dist_matrix = np.full((num_movers, num_movers), np.inf)
+
+    start_idx = 0
+    for i in range(0, num_movers - 1):
+        offset_idx = num_movers - (i + 1)
+        stop_idx = start_idx + offset_idx
+        mover_i_qpos[start_idx:stop_idx, :] = np.repeat(mover_qpos[i : i + 1, :], offset_idx, axis=0)
+        mover_j_qpos[start_idx:stop_idx, :] = mover_qpos[i + 1 :, :]
+        c_size_arr_i[start_idx:stop_idx, :] = np.repeat(c_size_arr[i : i + 1, :], offset_idx, axis=0)
+        c_size_arr_j[start_idx:stop_idx, :] = c_size_arr[i + 1 :, :]
+
+        # Compute distances and update distance table
+        distances = np.linalg.norm(mover_qpos[i, :2] - mover_qpos[i + 1 :, :2], axis=1)
+        mover_dist_matrix[i, i + 1 :] = distances
+        mover_dist_matrix[i + 1 :, i] = distances  # Symmetric
+
+        start_idx = stop_idx
+
+    # flattened distances for i < j
+    mover_dist = mover_dist_matrix[np.triu_indices(num_movers, k=1)]
+
+    return mover_dist, mover_i_qpos, mover_j_qpos, c_size_arr_i, c_size_arr_j, mover_dist_matrix
+
+def get_close_mover_pairs(
+        mover_qpos: np.ndarray,
+        c_size_arr: np.ndarray,
+        threshold: float        # without c_size taken into account
+    ):
+    dists = calculate_mover_distances(mover_qpos, c_size_arr)[5]
+
+    # get all (i, j) pairs where distance < threshold and i < j
+    pairs = np.argwhere((dists < threshold) & (np.triu(np.ones_like(dists), k=1) == 1))
+    return [tuple(int(i) for i in pair) for pair in pairs], dists

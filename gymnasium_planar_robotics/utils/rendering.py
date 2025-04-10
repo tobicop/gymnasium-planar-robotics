@@ -414,7 +414,7 @@ class Matplotlib2DViewer:
         """Toggle the manual control of movers (on/off)."""
         self.manual_control_active = not self.manual_control_active
 
-    def render(self, mover_qpos: np.ndarray, mover_qvel: np.ndarray, mover_goals: np.ndarray | None = None) -> None:
+    def render(self, mover_qpos: np.ndarray, mover_qvel: np.ndarray, c_size_arr: np.ndarray, mover_goals: np.ndarray | None = None) -> None:
         """Render the next frame.
 
         :param mover_qpos: a numpy array of shape (num_movers,7) containing the qpos (x_p,y_p,z_p,w_o,x_o,y_o,z_o) of each mover

@@ -530,7 +530,9 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         if self.show_2D_plot:
             mover_qpos = self.get_mover_qpos_arr(mover_names=self.mover_names, add_noise=False)
             mover_qvel = self.get_mover_qvel_arr(mover_names=self.mover_names, add_noise=False)
-            self.matplotlib_2D_viewer.render(mover_qpos=mover_qpos, mover_qvel=mover_qvel, mover_goals=None)
+            add_safety_offset = False
+            c_size_arr = self.get_c_size_arr(c_size=self.c_size + self.c_size_offset * int(add_safety_offset), num_reps=self.num_movers)
+            self.matplotlib_2D_viewer.render(mover_qpos=mover_qpos, mover_qvel=mover_qvel, c_size_arr=c_size_arr, mover_goals=None)
 
     def compute_terminated(
         self, achieved_goal: np.ndarray | None = None, desired_goal: np.ndarray | None = None, info: dict[str, any] | None = None

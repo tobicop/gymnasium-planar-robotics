@@ -272,55 +272,6 @@ class BasicPlanarRoboticsEnv:
     ###################################################
     # Collision and position validation checks        #
     ###################################################
-    def calculate_mover_distances(
-        self,
-        mover_names: list[str],
-        c_size: float | np.ndarray,
-        add_safety_offset: bool = False,
-        mover_qpos: np.ndarray | None = None,
-        add_qpos_noise: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Calculate the distances between movers and prepare collision size arrays.
-
-        :param mover_names: a list of mover names that should be checked
-        :param c_size: the size of the collision shape of the movers
-        :param add_safety_offset: whether to add the size offset, defaults to False
-        :param mover_qpos: the qpos of the movers, defaults to None
-        :param add_qpos_noise: whether to add Gaussian noise to the qpos of the movers, defaults to False
-        :return: A tuple containing:
-            - mover_dist: The distances between movers.
-            - mover_i_qpos: The qpos of the first mover in each pair.
-            - mover_j_qpos: The qpos of the second mover in each pair.
-            - c_size_arr: The collision size arrays for the movers.
-        """
-        if mover_qpos is None:
-            mover_qpos = self.get_mover_qpos_arr(mover_names=mover_names, add_noise=add_qpos_noise)
-
-        num_movers = mover_qpos.shape[0]
-        assert mover_qpos.shape == (num_movers, 7)
-
-        c_size_arr = self.get_c_size_arr(c_size=c_size + self.c_size_offset * int(add_safety_offset), num_reps=num_movers)
-
-        num_checks = np.sum(np.arange(start=1, stop=num_movers, step=1))
-        mover_i_qpos = np.zeros((num_checks, 7))
-        mover_j_qpos = np.zeros((num_checks, 7))
-        c_size_arr_i = np.zeros((num_checks, c_size_arr.shape[1]))
-        c_size_arr_j = np.zeros((num_checks, c_size_arr.shape[1]))
-
-        start_idx = 0
-        for i in range(0, num_movers - 1):
-            offset_idx = num_movers - (i + 1)
-            stop_idx = start_idx + offset_idx
-            mover_i_qpos[start_idx:stop_idx, :] = np.repeat(mover_qpos[i : i + 1, :], offset_idx, axis=0)
-            mover_j_qpos[start_idx:stop_idx, :] = mover_qpos[i + 1 :, :]
-            c_size_arr_i[start_idx:stop_idx, :] = np.repeat(c_size_arr[i : i + 1, :], offset_idx, axis=0)
-            c_size_arr_j[start_idx:stop_idx, :] = c_size_arr[i + 1 :, :]
-            start_idx = stop_idx
-
-        mover_dist = np.linalg.norm(mover_i_qpos[:, :2] - mover_j_qpos[:, :2], ord=2, axis=1)
-
-        return mover_dist, mover_i_qpos, mover_j_qpos, c_size_arr_i, c_size_arr_j
-
     def check_mover_collision(
         self,
         mover_names: list[str],
@@ -343,12 +294,15 @@ class BasicPlanarRoboticsEnv:
             - mover_j_qpos: The qpos of the second mover in each pair.
             - c_size_arr: The collision size arrays for the movers.
         """
-        mover_dist, mover_i_qpos, mover_j_qpos, c_size_arr_i, c_size_arr_j = self.calculate_mover_distances(
-            mover_names=mover_names,
-            c_size=c_size,
-            add_safety_offset=add_safety_offset,
+        if mover_qpos is None:
+            mover_qpos = self.get_mover_qpos_arr(mover_names=mover_names, add_noise=add_qpos_noise)
+
+        num_movers = mover_qpos.shape[0]
+        c_size_arr = self.get_c_size_arr(c_size=c_size + self.c_size_offset * int(add_safety_offset), num_reps=num_movers)
+
+        mover_dist, mover_i_qpos, mover_j_qpos, c_size_arr_i, c_size_arr_j, _ = geometry_2D_utils.calculate_mover_distances(
             mover_qpos=mover_qpos,
-            add_qpos_noise=add_qpos_noise,
+            c_size_arr=c_size_arr
         )
 
         if self.c_shape == 'circle':
