@@ -7,7 +7,7 @@ import mujoco.viewer
 from gymnasium.envs.mujoco.mujoco_rendering import MujocoRenderer, BaseRender, OffScreenViewer, WindowViewer
 from mujoco import MjData, MjModel
 import matplotlib.pyplot as plt
-from gymnasium_planar_robotics.utils import rotations_utils
+from gymnasium_planar_robotics.utils import geometry_2D_utils, rotations_utils
 from matplotlib.patches import Rectangle, Circle, Arrow
 import sys
 
@@ -381,6 +381,7 @@ class Matplotlib2DViewer:
                     self.axs.add_patch(rect)
 
         self.movers = []
+        self.close_pairs = []
         self.highlight_marker = None
         self.cs = []
         self.cs_offset = []
@@ -424,6 +425,9 @@ class Matplotlib2DViewer:
         """
          #TODO: change location and/or pass as argument?
         ACC_MAX = 10.0
+        VEL_MAX = 2.0
+        # scalar value of c_size, used for mover distance threshold
+        c_size_scalar = self.c_size if isinstance(self.c_size, float) else self.c_size[0]
 
         #TODO: move somewhere else?
         def get_stop_dist(mover_velocity: np.ndarray) -> np.ndarray:
@@ -443,6 +447,8 @@ class Matplotlib2DViewer:
             dist_stop_vec = dist_stop_norm * rotations_utils.unit_vector(mover_velocity)
             return dist_stop_norm, dist_stop_vec
 
+        max_stop_dist, _ = get_stop_dist(np.array([VEL_MAX, 0]))
+
         for i in range(0, len(self.movers)):
             self.movers[i].remove()
             self.cs[i].remove()
@@ -451,10 +457,13 @@ class Matplotlib2DViewer:
             self.stop_arrows[i].remove()
             if len(self.goals) > 0:
                 self.goals[i].remove()
+        for pair in self.close_pairs:
+            pair.remove()
         if self.highlight_marker is not None:
             self.highlight_marker.remove()
-
+        
         self.movers = []
+        self.close_pairs = []
         self.highlight_marker = None
         self.cs = []
         self.cs_offset = []
@@ -466,7 +475,7 @@ class Matplotlib2DViewer:
             # we assume that the angles about the x and y axes are close to 0
             euler = rotations_utils.quat2euler(quat=mover_qpos[idx_mover, -4:])
 
-            # dimensions (width, height)) of the drawn mover rectangle
+            # dimensions (width, height) of the drawn mover rectangle
             mover_drawn_dims = (self.mover_sizes[idx_mover, 1] * 2, self.mover_sizes[idx_mover, 0] * 2)
 
             mover_rect = Rectangle(
@@ -585,6 +594,26 @@ class Matplotlib2DViewer:
                     zorder=3,
                 )[0]
                 self.goals.append(goal)
+
+        # draw circle around close movers
+        close_mover_pairs, mover_dists = geometry_2D_utils.get_close_mover_pairs(
+                mover_qpos=mover_qpos,
+                c_size_arr=c_size_arr,
+                threshold=max_stop_dist + 2 * c_size_scalar
+        )
+        for pair in close_mover_pairs:
+            # get center point between movers
+            center = 0.5 * (mover_qpos[pair[0], :2] + mover_qpos[pair[1], :2])
+
+            cs = Circle(
+                (center[1], center[0]),
+                0.5 * mover_dists[pair] + c_size_scalar,
+                color='black',
+                fill=False,
+                linestyle='--',
+                zorder=2,
+            )
+            self.close_pairs.append(self.axs.add_patch(cs))
 
         plt.show(block=False)
         plt.pause(0.0001)
