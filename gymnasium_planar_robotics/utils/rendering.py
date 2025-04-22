@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 from gymnasium_planar_robotics.utils import rotations_utils
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Annulus, Arrow, Circle, Rectangle
+import datetime
+import os
 import sys
 
 
@@ -596,7 +598,9 @@ class Matplotlib2DViewer:
         plt.pause(0.0001)
 
     def close(self):
-        """Close the figure."""
+        """Close the figure. This function is usually called when the environment is closed, not after a reset."""
+        # save the last recorded actions from the buffer to the file before closing
+        self.manual_controller._save_actions(plot_closed=True)
         plt.close(self.figure)
 
 
@@ -611,10 +615,14 @@ class ManualControl:
     """
 
     ACCELERATION = 5.0
+    MAX_BUF_LEN = 200
+    RECORDING_FOLDER_NAME = "action_records"
 
     # pass a reference of Matplotlib2DViewer to access its methods
     def __init__(self, viewer: 'Matplotlib2DViewer') -> None:
         self.viewer = viewer
+        self.action_buffer = []
+        self.recording_active = False
         self.keys_pressed = set()
         self.reset_kinematics()
 
@@ -671,11 +679,18 @@ class ManualControl:
     def get_action_manual(self) -> np.ndarray:
         """Get the current acceleration values based on the pressed keys and the current mover index.
         If manual control is inactive, the acceleration values remain unchanged.
+        Additionally, save the currently controlled mover index and its manual action to the buffer/file, if recording
+        was enabled by the user.
 
         :return: A numpy array containing the current acceleration values and the index of the currently controlled mover.
         """
         if self.viewer.manual_control_active:
             self.apply_key_kinematics()
+            
+            # append current action to buffer if recording is enabled
+            if self.recording_active:
+                self.action_buffer.append([self.viewer.manual_control_idx, self.current_acc[0], self.current_acc[1]])
+                self._save_actions()
                 
         return self.current_acc.copy(), self.viewer.manual_control_idx
     
@@ -693,3 +708,42 @@ class ManualControl:
             return action_output
         else:
             return action_input
+    
+    def start_recording(self, filename: str = ""):
+        """
+        Start recording the actions performed during manual control, which are stored in a buffer and written to a file when the
+        buffer is full or when the environment is closed. It is recommended to record only one sequence before closing
+        the environment to ensure proper data saving.
+        The required folder and file are created, if necessary.
+
+        :param filename: The name of the file to save the recorded actions. If not provided, a timestamp will be used as filename.
+        """
+        if not self.recording_active:
+            # create output directory if does not exist yet
+            os.makedirs(self.RECORDING_FOLDER_NAME, exist_ok=True)
+
+            # use provided filename if specified or default to timestamp
+            rec_filename = filename if filename else datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.recording_file_path = f"{self.RECORDING_FOLDER_NAME}/{rec_filename}.csv"
+
+            # write header to empty file
+            with open(file=self.recording_file_path, mode="w") as file:
+                np.savetxt(file, [], header="idx_mover,action_x,action_y")
+
+            self.recording_active = True
+
+    def _save_actions(self, plot_closed: bool = False):
+        """Write the recorded actions to a CSV file. The actions are saved when the buffer reaches its maximum length or when the
+        environment is closed. After writing, the buffer is cleared.
+
+        :param plot_closed: A boolean indicating whether the plot (and environment) has been closed.
+            If True, all remaining actions in the buffer are written to the file.
+        """
+        if not self.recording_active:
+            return
+
+        if len(self.action_buffer) >= self.MAX_BUF_LEN or plot_closed:
+            with open(file=self.recording_file_path, mode="a") as file:
+                np.savetxt(file, self.action_buffer, delimiter=",", fmt=["%d", "%f", "%f"])
+
+            self.action_buffer = []
