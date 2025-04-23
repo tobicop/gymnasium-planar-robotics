@@ -623,6 +623,8 @@ class ManualControl:
         self.viewer = viewer
         self.action_buffer = []
         self.recording_active = False
+        self.replay_active = False
+        self.replay_index = 0
         self.keys_pressed = set()
         self.reset_kinematics()
 
@@ -655,7 +657,7 @@ class ManualControl:
         """Reset the current acceleration values to zero. """
         self.current_acc = np.array([0.0, 0.0], dtype=np.float64)
 
-    def apply_key_kinematics(self):
+    def _apply_key_kinematics(self):
         """Apply kinematic updates based on the currently pressed keys.
         Updates the acceleration values for the controlled mover:
         
@@ -682,10 +684,12 @@ class ManualControl:
         Additionally, save the currently controlled mover index and its manual action to the buffer/file, if recording
         was enabled by the user.
 
-        :return: A numpy array containing the current acceleration values and the index of the currently controlled mover.
+        :return:
+            - A numpy array containing the current acceleration values
+            - An integer representing the index of the currently controlled mover
         """
         if self.viewer.manual_control_active:
-            self.apply_key_kinematics()
+            self._apply_key_kinematics()
             
             # append current action to buffer if recording is enabled
             if self.recording_active:
@@ -693,22 +697,53 @@ class ManualControl:
                 self._save_actions()
                 
         return self.current_acc.copy(), self.viewer.manual_control_idx
-    
-    def overwrite_action(self, action_input: np.ndarray) -> np.ndarray:
-        """Overwrite the action for the specified mover with the manually controlled acceleration values.
 
-        :param action_input: The action array to be overwritten.
-        :return: The action array with the manually controlled acceleration values for the controlled mover (if manual control is active).
+    def _get_action_replay(self) -> tuple[np.ndarray, int]:
+        """Retrieve the next action from the replay buffer for the specified mover.
+        Also the replay index is updated and if all actions have been processed, replay mode is deactivated.
+
+        :return:
+            - A numpy array of shape(2,) representing the retrieved acceleration values [action_x, action_y]
+            - An integer representing the index of the mover to which the action applies
         """
-        assert(len(action_input) == 2 * self.viewer.num_movers)
+        assert self.replay_active
+
+        # get the current replay entry (shape: [mover_idx, mover_x, mover_y])
+        csv_entry = self.replay_loaded[self.replay_index]
+        mover_idx = int(csv_entry[0])
+        action = np.array(csv_entry[1:], dtype=np.float64)
+
+        self.replay_index += 1
+
+        # deactivate replay if no actions are left
+        if self.replay_index >= len(self.replay_loaded):
+            self.replay_active = False
+
+        return action, mover_idx
+
+    def overwrite_action(self, action_input: np.ndarray) -> np.ndarray:
+        """Overwrite the action for the specified mover with acceleration values from replay and/or manual control.
+        If both are active and applied to the same mover, the manual control values have the higher priority.
+        
+        :param action_input: A numpy array of shape (num_movers,2) representing the actions for all movers (to be overwritten)
+        :return: A numpy array of the same shape as `action_input`, with the actions for the relevant mover(s) overwritten
+        """
+        assert len(action_input) == 2 * self.viewer.num_movers
+        action_output = action_input.copy()     # copy to avoid changing the original array
+        
+        # if replay is active, overwrite the controlled mover's action
+        if self.replay_active:
+            action_replay, mover_idx = self._get_action_replay()
+            action_output[mover_idx*2:(mover_idx+1)*2] = action_replay
+
+        # if manual control is active, overwrite action even if replay was applied for the same mover
         if self.viewer.manual_control_active:
-            action_output = action_input.copy()     # copy to avoid changing the original array
-            manual_action, mover_idx = self.get_action_manual()
-            action_output[mover_idx*2:(mover_idx+1)*2] = manual_action
-            return action_output
-        else:
-            return action_input
-    
+            action_manual, mover_idx = self.get_action_manual()
+            action_output[mover_idx*2:(mover_idx+1)*2] = action_manual
+
+        # return unchanged input if neither manual control nor replay is active
+        return action_output
+
     def start_recording(self, filename: str = ""):
         """
         Start recording the actions performed during manual control, which are stored in a buffer and written to a file when the
@@ -747,3 +782,29 @@ class ManualControl:
                 np.savetxt(file, self.action_buffer, delimiter=",", fmt=["%d", "%f", "%f"])
 
             self.action_buffer = []
+
+    def load_actions(self, file_prefix: str) -> None:
+        """Load recorded actions from a CSV file into the replay buffer for replay mode.
+
+        :param file_prefix: The prefix of the CSV file to load (without file extension).
+            The file is expected to be located in the `RECORDING_FOLDER_NAME` directory.
+        """
+        self.replay_active = True
+
+        input_file = f"{self.RECORDING_FOLDER_NAME}/{file_prefix}.csv"
+
+        # check if a file with the given prefix exists
+        if not os.path.exists(input_file):
+            raise FileNotFoundError(f"The file '{input_file}' does not exist.")
+    
+        # load csv file (row format: mover_idx, mover_x, mover_y)
+        actions = np.loadtxt(input_file, delimiter=",", skiprows=1)  # skip header
+        
+        # validate loaded actions
+        if actions.size == 0:
+            raise ValueError("No actions found in the file.")
+        if actions.ndim == 1:
+            actions = actions.reshape(1, -1)
+
+        self.replay_loaded = actions
+        self.replay_index = 0
