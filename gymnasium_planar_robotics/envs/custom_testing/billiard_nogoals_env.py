@@ -353,18 +353,16 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         """
         # if manual control is enabled, adjust values of currently controller mover
         if self.matplotlib_2D_viewer.manual_control_active:
-            # get acceleration values and index of respective mover
-            manual_action, mover_idx = self.matplotlib_2D_viewer.manual_controller.get_action_manual()
-            
-            # if braking was initiated, reverse every other mover's acceleration vector/direction
+            # if braking was initiated, reverse every mover's acceleration vector/direction
             if self.matplotlib_2D_viewer.manual_controller.get_brake_state():
                 action *= -1
-            
-            # overwrite acceleration values of respective mover (after potential reversal)
-            action[mover_idx*2:(mover_idx+1)*2] = manual_action
 
-        # billiard mode: boost dynamics while collision
-        action_boost = self._boost_dynamics(action)
+        # get action vector, potentially overwritten for movers controlled manually or by replay
+        # use ellipsis to enable overwriting/reassigning the action array (mutable argument)
+        action[...] = self.matplotlib_2D_viewer.manual_controller.overwrite_action(action)
+
+        # billiard mode: boost dynamics while wall collision
+        action_boost = self._boost_dynamics(action)     # also changes action (flips direction)
 
         # integration and collision check
         for _ in range(0, self.num_cycles):
@@ -712,10 +710,11 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
 
         return closest_wall
 
-    def billiard_episode(self, active_movers: int | None = None):
-        """Simulates a 'billiard mode' episode where a number of movers are initialized with random accelerations and the
-        system evolves until a collision occurs.
+    def billiard_episode(self, action_init: np.ndarray | None = None, active_movers: int | None = None):
+        """Simulates a 'billiard mode' episode where a number of movers are initialized with user-defined or random
+        accelerations and the system evolves until a collision occurs.
 
+        :param action_init: Numpy array of shape (num_movers,2). If None, random actions are generated.
         :param active_movers: The number of movers to activate. If None, defaults to using all available movers.
             Must be between 0 and self.num_movers (inclusive).
         """
@@ -723,23 +722,35 @@ class BilliardEnv(BasicPlanarRoboticsSingleAgentEnv):
         if active_movers is None:
             active_movers = self.num_movers
         # validate number of active movers in "billiard mode"
-        elif active_movers < 0 or active_movers > self.num_movers:
+        elif not (0 <= active_movers <= self.num_movers):
             raise ValueError("Invalid number of active movers specified")
 
-        # initialize all movers with zero dynamics
-        action = np.zeros(2 * self.num_movers)
+        # initialize all movers with zero dynamics if no initial action was passed
+        if action_init:
+            assert action_init.shape == (self.num_movers,2)
+            action = action_init.copy()
+        else:
+            action = np.zeros(2 * self.num_movers)
 
-        # assign a random initial acceleration with magnitude a_max to each mover
-        for mover_idx in range(active_movers):
-            # get action vector with random (valid) acceleration values
-            init_acc = self.action_space.sample()
-            # normalize and scale respective acceleration vector to magnitude a_max (maximum acceleration)
-            action_out = rotations_utils.unit_vector(init_acc[mover_idx*2:(mover_idx+1)*2]) * self.a_max
-            # update vector of respective mover
-            action[mover_idx*2:(mover_idx+1)*2] = action_out
+            # get action vector with random (valid) acceleration values and apply to active movers
+            action[:active_movers * 2] = self.action_space.sample()[:active_movers * 2]
+
+        # 2d shape for easier processing
+        action = action.reshape(self.num_movers, 2)
+
+        # compute norms, avoid division by zero by replacing zero norms with 1 (divisor stays zero)
+        action_norms = np.linalg.norm(action, axis=1, keepdims=True)
+        action_norms[action_norms == 0] = 1
+        
+        # normalize and scale vectors to magnitude a_max (maximum acceleration)
+        action_scaled = (action / action_norms) * self.a_max
+        
+        # return to original (flat) shape
+        action = action_scaled.flatten()
 
         # action loop, terminated on mover collision
         mover_collision = False
         while not mover_collision:
+            # action gets overwritten by step (direction flips etc.)
             _, _, terminated, truncated, info = self.step(action)
             mover_collision = bool(info['mover_collision'])
