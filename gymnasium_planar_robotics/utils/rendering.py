@@ -750,6 +750,7 @@ class ManualControl:
         buffer is full or when the environment is closed. It is recommended to record only one sequence before closing
         the environment to ensure proper data saving.
         The required folder and file are created, if necessary.
+        This function also activates manual control.
 
         :param filename: The name of the file to save the recorded actions. If not provided, a timestamp will be used as filename.
         """
@@ -765,6 +766,8 @@ class ManualControl:
             with open(file=self.recording_file_path, mode="w") as file:
                 np.savetxt(file, [], header="idx_mover,action_x,action_y")
 
+            # activate manual control and recording
+            self.viewer.manual_control_active = True
             self.recording_active = True
 
     def _save_actions(self, plot_closed: bool = False):
