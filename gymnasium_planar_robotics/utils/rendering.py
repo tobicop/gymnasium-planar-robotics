@@ -681,8 +681,6 @@ class ManualControl:
     def get_action_manual(self) -> np.ndarray:
         """Get the current acceleration values based on the pressed keys and the current mover index.
         If manual control is inactive, the acceleration values remain unchanged.
-        Additionally, save the currently controlled mover index and its manual action to the buffer/file, if recording
-        was enabled by the user.
 
         :return:
             - A numpy array containing the current acceleration values
@@ -690,28 +688,19 @@ class ManualControl:
         """
         if self.viewer.manual_control_active:
             self._apply_key_kinematics()
-            
-            # append current action to buffer if recording is enabled
-            if self.recording_active:
-                self.action_buffer.append([self.viewer.manual_control_idx, self.current_acc[0], self.current_acc[1]])
-                self._save_actions()
                 
         return self.current_acc.copy(), self.viewer.manual_control_idx
 
-    def _get_action_replay(self) -> tuple[np.ndarray, int]:
-        """Retrieve the next action from the replay buffer for the specified mover.
+    def _get_action_replay(self) -> np.ndarray:
+        """Retrieve the next action from the replay buffer for all movers.
         Also the replay index is updated and if all actions have been processed, replay mode is deactivated.
 
-        :return:
-            - A numpy array of shape(2,) representing the retrieved acceleration values [action_x, action_y]
-            - An integer representing the index of the mover to which the action applies
+        :return: A numpy array of shape(2,) representing the retrieved acceleration values [action_x, action_y]
         """
         assert self.replay_active
 
-        # get the current replay entry (shape: [mover_idx, mover_x, mover_y])
-        csv_entry = self.replay_loaded[self.replay_index]
-        mover_idx = int(csv_entry[0])
-        action = np.array(csv_entry[1:], dtype=np.float64)
+        # get the current replay entry (shape: mover0_x, mover0_y, mover1_x, mover1_y, ...)
+        action = np.array(self.replay_loaded[self.replay_index], dtype=np.float64)
 
         self.replay_index += 1
 
@@ -719,12 +708,13 @@ class ManualControl:
         if self.replay_index >= len(self.replay_loaded):
             self.replay_active = False
 
-        return action, mover_idx
+        return action
 
     def overwrite_action(self, action_input: np.ndarray) -> np.ndarray:
-        """Overwrite the action for the specified mover with acceleration values from replay and/or manual control.
+        """Overwrite the action for the respective mover(s) with acceleration values from replay and/or manual control.
         If both are active and applied to the same mover, the manual control values have the higher priority.
-        
+        Additionally, save the modified action array to the buffer/file, if recording was enabled by the user.
+
         :param action_input: A numpy array of shape (num_movers,2) representing the actions for all movers (to be overwritten)
         :return: A numpy array of the same shape as `action_input`, with the actions for the relevant mover(s) overwritten
         """
@@ -733,13 +723,19 @@ class ManualControl:
         
         # if replay is active, overwrite the controlled mover's action
         if self.replay_active:
-            action_replay, mover_idx = self._get_action_replay()
-            action_output[mover_idx*2:(mover_idx+1)*2] = action_replay
+            action_output = self._get_action_replay()
 
         # if manual control is active, overwrite action even if replay was applied for the same mover
+        #TODO: what to do if both replay and manual control are active?
         if self.viewer.manual_control_active:
             action_manual, mover_idx = self.get_action_manual()
             action_output[mover_idx*2:(mover_idx+1)*2] = action_manual
+
+        #TODO: if possible, move somewhere where it will be executed every time (e.g. env.step())
+        # append current action to buffer if recording is enabled
+        if self.recording_active:
+            self._append_action(action_output)
+            self._save_actions()
 
         # return unchanged input if neither manual control nor replay is active
         return action_output
@@ -764,11 +760,18 @@ class ManualControl:
 
             # write header to empty file
             with open(file=self.recording_file_path, mode="w") as file:
-                np.savetxt(file, [], header="idx_mover,action_x,action_y")
+                np.savetxt(file, [], header="mover0_x, mover0_y, mover1_x, mover1_y, ...")
 
             # activate manual control and recording
             self.viewer.manual_control_active = True
             self.recording_active = True
+
+    def _append_action(self, action: np.ndarray):
+        """Append the current action to the action buffer for recording.
+
+        :param action: A numpy array of shape (num_movers,2) representing the actions for all movers
+        """
+        self.action_buffer.append(action)
 
     def _save_actions(self, plot_closed: bool = False):
         """Write the recorded actions to a CSV file. The actions are saved when the buffer reaches its maximum length or when the
@@ -779,10 +782,11 @@ class ManualControl:
         """
         if not self.recording_active:
             return
-
+        
         if len(self.action_buffer) >= self.MAX_BUF_LEN or plot_closed:
             with open(file=self.recording_file_path, mode="a") as file:
-                np.savetxt(file, self.action_buffer, delimiter=",", fmt=["%d", "%f", "%f"])
+                line_format = ["%f"] * (2 * self.viewer.num_movers)
+                np.savetxt(file, self.action_buffer, delimiter=",", fmt=line_format)
 
             self.action_buffer = []
 
@@ -800,7 +804,7 @@ class ManualControl:
         if not os.path.exists(input_file):
             raise FileNotFoundError(f"The file '{input_file}' does not exist.")
     
-        # load csv file (row format: mover_idx, mover_x, mover_y)
+        # load csv file (row format: mover0_x, mover0_y, mover1_x, mover1_y, ...)
         actions = np.loadtxt(input_file, delimiter=",", skiprows=1)  # skip header
         
         # validate loaded actions
