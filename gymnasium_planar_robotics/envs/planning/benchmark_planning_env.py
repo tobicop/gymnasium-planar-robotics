@@ -251,9 +251,13 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
             }
         )
 
-        # action space
-        as_low = -self.j_max if self.learn_jerk else -self.a_max
-        as_high = self.j_max if self.learn_jerk else self.a_max
+        # define action space
+        # acceleration actuator
+        #as_low = -self.j_max if self.learn_jerk else -self.a_max
+        #as_high = self.j_max if self.learn_jerk else self.a_max
+        #TODO: implement velocity actuator
+        as_low = -self.j_max if self.learn_jerk else -self.v_max
+        as_high = self.j_max if self.learn_jerk else self.v_max
         self.action_space = gym.spaces.Box(low=as_low, high=as_high, shape=(self.num_movers * 2,), dtype='float64')
 
         # minimum and maximum possible mover (x,y)-positions
@@ -310,13 +314,27 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
                 )
             else:
                 # learn acceleration
+                # mover_actuator_xml_str += (
+                #     f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
+                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                #     + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
+                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                #     + '\n'
+                # )
+                #TODO: learn velocity (velocity actuator)
                 mover_actuator_xml_str += (
-                    f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
-                    + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
-                    + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
-                    + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                    f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{mover_mass}"/>'
+                    + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{mover_mass}"/>'
                     + '\n'
                 )
+                # learn velocity (general actuator, does the same as velocity actuator plus actearly=true)
+                # mover_actuator_xml_str += (
+                #     f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
+                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
+                #     + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
+                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
+                #     + '\n'
+                # )
 
         mover_actuator_xml_str += '\t</actuator>'
 
@@ -437,8 +455,11 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
                     next_jerk = (next_acc - acc) / self.cycle_time
                 ctrl = next_jerk.copy()
             else:
-                _, next_acc = self.ensure_max_dyn_val(current_values=vel, max_value=self.v_max, next_derivs=action[idx_mover, :])
-                ctrl = next_acc.copy()
+                #TODO: testing: velocity actuator
+                #_, next_acc = self.ensure_max_dyn_val(current_values=vel, max_value=self.v_max, next_derivs=action[idx_mover, :])
+                #ctrl = next_acc.copy()
+                ctrl = action[idx_mover].reshape((1,-1))
+                #print(ctrl)
             mujoco_utils.set_actuator_ctrl(
                 model=self.model, data=self.data, actuator_name=self.mover_actuator_x_names[idx_mover], value=ctrl[0, 0]
             )
@@ -453,6 +474,9 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
             mover_qpos = self.get_mover_qpos_arr(mover_names=self.mover_names, add_noise=False)
             mover_qvel = self.get_mover_qvel_arr(mover_names=self.mover_names, add_noise=False)
             self.matplotlib_2D_viewer.render(mover_qpos=mover_qpos, mover_qvel=mover_qvel, mover_goals=self.goals)
+        
+        #TODO: remove
+        #print(self.data.qvel[:2], np.linalg.norm(self.data.qacc[:2]))
 
     def compute_terminated(
         self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict[str, any] | None = None
