@@ -190,7 +190,7 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
     ) -> None:
         #TODO: replace with enum? maybe pass the according integer
         self.learn_jerk = learn_jerk
-        self.actuator_type = ActuatorType.ACCELERATION
+        self.actuator_type = ActuatorType.VELOCITY
 
         # cam config
         default_cam_config = {
@@ -336,19 +336,12 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
                     )
                 #TODO: learn velocity (velocity actuator)
                 case ActuatorType.VELOCITY:
+                    kv_gain = 4 * mover_mass # increase acceleration (dirty)
                     mover_actuator_xml_str += (
-                        f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{mover_mass}"/>'
-                        + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{mover_mass}"/>'
+                        f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
+                        + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'
                         + '\n'
                     )
-                    # learn velocity (general actuator, does the same as velocity actuator plus actearly=true)
-                    # mover_actuator_xml_str += (
-                    #     f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
-                    #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
-                    #     + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
-                    #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
-                    #     + '\n'
-                    # )
 
         mover_actuator_xml_str += '\t</actuator>'
 
