@@ -87,11 +87,18 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import logger
 import mujoco
+import enum
 from gymnasium_planar_robotics import BasicPlanarRoboticsSingleAgentEnv
 from gymnasium_planar_robotics.utils import mujoco_utils
 from collections import OrderedDict
 from gymnasium_planar_robotics import Matplotlib2DViewer
 
+
+class ActuatorType(enum.Enum):
+    POSITION = 0
+    VELOCITY = 1
+    ACCELERATION = 2
+    JERK = 3
 
 class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
     """A simple planning environment.
@@ -181,7 +188,9 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
         threshold_pos: float = 0.1,
         use_mj_passive_viewer: bool = False,
     ) -> None:
+        #TODO: replace with enum? maybe pass the according integer
         self.learn_jerk = learn_jerk
+        self.actuator_type = ActuatorType.ACCELERATION
 
         # cam config
         default_cam_config = {
@@ -304,37 +313,42 @@ class BenchmarkPlanningEnv(BasicPlanarRoboticsSingleAgentEnv):
             joint_name = f'mover_joint_{idx_mover}'
             mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else self.mover_mass[idx_mover]
 
-            if self.learn_jerk:
-                mover_actuator_xml_str += (
-                    f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="integrator" '
-                    + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
-                    + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
-                    + f'dyntype="integrator" gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
-                    + '\n'
-                )
-            else:
-                # learn acceleration
-                # mover_actuator_xml_str += (
-                #     f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
-                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
-                #     + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
-                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
-                #     + '\n'
-                # )
+            #TODO: utilize learn_jerk (and other potentially necessary variables)
+            #if self.learn_jerk:
+            
+            match self.actuator_type:
+                case ActuatorType.JERK:
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="integrator" '
+                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
+                        + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
+                        + f'dyntype="integrator" gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
+                        + '\n'
+                    )
+                case ActuatorType.ACCELERATION:
+                    # learn acceleration
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
+                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                        + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
+                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                        + '\n'
+                    )
                 #TODO: learn velocity (velocity actuator)
-                mover_actuator_xml_str += (
-                    f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{mover_mass}"/>'
-                    + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{mover_mass}"/>'
-                    + '\n'
-                )
-                # learn velocity (general actuator, does the same as velocity actuator plus actearly=true)
-                # mover_actuator_xml_str += (
-                #     f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
-                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
-                #     + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
-                #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
-                #     + '\n'
-                # )
+                case ActuatorType.VELOCITY:
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{mover_mass}"/>'
+                        + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{mover_mass}"/>'
+                        + '\n'
+                    )
+                    # learn velocity (general actuator, does the same as velocity actuator plus actearly=true)
+                    # mover_actuator_xml_str += (
+                    #     f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
+                    #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
+                    #     + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
+                    #     + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="affine" biasprm="0 0 {-mover_mass}" actearly="true"/>'
+                    #     + '\n'
+                    # )
 
         mover_actuator_xml_str += '\t</actuator>'
 
