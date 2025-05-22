@@ -164,8 +164,10 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
         learn_jerk: bool = False,
         threshold_pos: float = 0.05,
         use_mj_passive_viewer: bool = False,
+        torque_control_mode: bool = False,
     ) -> None:
         self.learn_jerk = learn_jerk
+        self.torque_control_mode = torque_control_mode
 
         # object parameters, object type: box
         self.object_length_xy = 0.07 / 2  # [m] (half-size)
@@ -255,13 +257,20 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
         self.object_min_xy_pos = self.min_xy_pos + safety_margin
         self.object_max_xy_pos = self.max_xy_pos - safety_margin
 
+        # disable x and y axes if not in direct torque control mode
+        if self.torque_control_mode:
+            joint_mask = np.array([1, 1, 1, 1, 1, 1])
+        else:
+            joint_mask = np.array([0, 0, 1, 1, 1, 1])
+
         # impedance contoller
         self.impedance_controller = MoverImpedanceController(
             model=self.model,
             mover_joint_name=self.mover_joint_names[0],
-            joint_mask=np.array([0, 0, 1, 1, 1, 1]),
+            joint_mask=joint_mask,
             translational_stiffness=1.0,
             rotational_stiffness=0.1,
+            torque_mode=self.torque_control_mode,
         )
         self.reload_model()
 
@@ -298,21 +307,22 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
         if self.impedance_controller is not None:
             mover_actuator_xml_str = '\n\n\t<actuator>' + '\n\t\t<!-- mover actuators -->'
             joint_name = self.mover_joint_names[self.idx_mover]
-            if self.learn_jerk:
-                mover_actuator_xml_str += (
-                    f'\n\t\t<general name="mover_actuator_x_{self.idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" '
-                    + f'dyntype="integrator" gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none" actearly="true"/>'
-                    + f'\n\t\t<general name="mover_actuator_y_{self.idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
-                    + f'dyntype="integrator" gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none" actearly="true"/>'
-                )
-            else:
-                # learn acceleration
-                mover_actuator_xml_str += (
-                    f'\n\t\t<general name="mover_actuator_x_{self.idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
-                    + f'gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none"/>'
-                    + f'\n\t\t<general name="mover_actuator_y_{self.idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
-                    + f'dyntype="none" gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none"/>'
-                )
+            if not self.torque_control_mode:
+                if self.learn_jerk:
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<general name="mover_actuator_x_{self.idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" '
+                        + f'dyntype="integrator" gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none" actearly="true"/>'
+                        + f'\n\t\t<general name="mover_actuator_y_{self.idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
+                        + f'dyntype="integrator" gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none" actearly="true"/>'
+                    )
+                else:
+                    # learn acceleration
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<general name="mover_actuator_x_{self.idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
+                        + f'gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none"/>'
+                        + f'\n\t\t<general name="mover_actuator_y_{self.idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
+                        + f'dyntype="none" gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none"/>'
+                    )
 
             mover_actuator_xml_str += self.impedance_controller.generate_actuator_xml_string(idx_mover=self.idx_mover)
             mover_actuator_xml_str += '\n'
@@ -408,6 +418,17 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
         # reload model with new start pos and goal pos
         self.reload_model(mover_start_xy_pos=start_qpos[:, :2])
 
+    def torque_control_step(self, force: np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
+        """Set the desired force/torque (Cartesian wrench) for torque control mode.
+
+        :param force: a numpy array of shape (6,) with fx, fy, fz, tx, ty, tz
+        """
+        self.impedance_controller.set_desired_force(force)
+
+        # pass empty action (zeros) to execute step() while applying only the specified force wrench
+        empty_action = np.zeros((self.num_movers * 2), dtype=np.float64)
+        return self.step(empty_action)
+
     def _mujoco_step_callback(self, action: np.ndarray) -> None:
         """Apply the next action, i.e. it sets the jerk or acceleration, ensuring the minimum and maximum velocity and acceleration
         (for one cycle).
@@ -439,11 +460,16 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
             model=self.model, data=self.data, actuator_name=self.mover_actuator_y_names[self.idx_mover], value=ctrl[0, 1]
         )
         # update impedance controller
+        pos_d = None
+        quat_d = None
+        if not self.torque_control_mode:
+            pos_d = np.array([0, 0, self.initial_mover_zpos + self.mover_size[2]])
+            quat_d = np.array([1, 0, 0, 0])
         self.impedance_controller.update(
             model=self.model,
             data=self.data,
-            pos_d=np.array([0, 0, self.initial_mover_zpos + self.mover_size[2]]),
-            quat_d=np.array([1, 0, 0, 0]),
+            pos_d=pos_d,
+            quat_d=quat_d,
         )
 
     def compute_terminated(

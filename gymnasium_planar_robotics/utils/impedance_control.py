@@ -32,7 +32,12 @@ class MoverImpedanceController:
         joint_mask: np.ndarray | None = None,
         translational_stiffness: np.ndarray | float = 1.0,
         rotational_stiffness: np.ndarray | float = 0.1,
+        torque_mode: bool = False,
     ) -> None:
+        # control mode: impedance (regular) or torque (direct control)
+        self.torque_mode = torque_mode
+        self.desired_wrench = np.zeros(6)  # for direct torque input (fx, fy, fz, tx, ty, tz)
+
         self.mover_joint_name = mover_joint_name
         self.mover_body_id = model.joint(self.mover_joint_name).bodyid[0]
         self.mover_dofadr = model.body(self.mover_body_id).dofadr[0]
@@ -111,7 +116,7 @@ class MoverImpedanceController:
         """
         return ctrl
 
-    def update(self, model: MjModel, data: MjData, pos_d: np.ndarray, quat_d: np.ndarray) -> None:
+    def update(self, model: MjModel, data: MjData, pos_d: np.ndarray | None = None, quat_d: np.ndarray | None = None) -> None:
         """Compute new controls based on the position and orientation error.
 
         :param model: mjModel of the MuJoCo environment
@@ -119,14 +124,9 @@ class MoverImpedanceController:
         :param pos_d: the desired position (x_p,y_p,z_p) specified as a numpy array of shape (3,)
         :param quat_d: the desired orientation, specified as a quaternion (w_o,x_o,y_o,z_o), i.e. numpy array of shape (4,)
         """
-        assert pos_d.shape == (3,)
-        assert quat_d.shape == (4,)
-
-        # desired rot mat
-        xmat_d = rotations_utils.quat2mat(quat_d)
-
-        # joint velocities
-        dq = mujoco_utils.get_joint_qvel(model, data, self.mover_joint_name).reshape((-1, 1))
+        if not self.torque_mode:
+            assert pos_d.shape == (3,)
+            assert quat_d.shape == (4,)
 
         # Jacobians
         jacp = np.zeros((3, model.nv))  # tanslational part of the Jacobian
@@ -135,24 +135,44 @@ class MoverImpedanceController:
         jac = np.vstack((jacp, jacr))
         jac = jac[:, self.mover_dofadr : self.mover_dofadr + self.mover_dofnum]
 
-        # get Cartesian position and orientation of the mover
-        xpos = data.xpos[self.mover_body_id, :]
-        xmat = data.xmat[self.mover_body_id, :].reshape(3, 3)
+        if self.torque_mode:
+            # direct wrench to joint torque via Jacobian
+            wrench = self.joint_mask * self.desired_wrench      # filter DoFs
+            ctrl = (jac.T @ wrench.reshape((6, 1))).flatten()
+        else:
+            # desired rot mat
+            xmat_d = rotations_utils.quat2mat(quat_d)
 
-        error = np.zeros((6, 1))
-        # position error
-        error[:3, 0] = pos_d - xpos
-        # orientation error
-        axis, theta = rotations_utils.quat2axisangle(rotations_utils.mat2quat(xmat.T @ xmat_d))
-        error[-3:, :] = xmat @ (axis.reshape((3, 1)) * theta)  # ee frame orientation -> base frame orientation
+            # joint velocities
+            dq = mujoco_utils.get_joint_qvel(model, data, self.mover_joint_name).reshape((-1, 1))
 
-        # compute controls
-        ctrl = self.joint_mask * (jac.T @ (self.stiffness @ error - self.damping @ (jac @ dq))).flatten()
+            # get Cartesian position and orientation of the mover
+            xpos = data.xpos[self.mover_body_id, :]
+            xmat = data.xmat[self.mover_body_id, :].reshape(3, 3)
 
-        # modify the computed controls, if desired
-        ctrl = self.ctrl_callback(ctrl=ctrl.copy())
+            error = np.zeros((6, 1))
+            # position error
+            error[:3, 0] = pos_d - xpos
+            # orientation error
+            axis, theta = rotations_utils.quat2axisangle(rotations_utils.mat2quat(xmat.T @ xmat_d))
+            error[-3:, :] = xmat @ (axis.reshape((3, 1)) * theta)  # ee frame orientation -> base frame orientation
+
+            # compute controls
+            ctrl = self.joint_mask * (jac.T @ (self.stiffness @ error - self.damping @ (jac @ dq))).flatten()
+
+            # modify the computed controls, if desired
+            ctrl = self.ctrl_callback(ctrl=ctrl.copy())
 
         # set controls
         for idx in range(0, 6):
             if self.joint_mask[idx]:
                 mujoco_utils.set_actuator_ctrl(model, data, actuator_name=self.actuator_names[idx], value=ctrl[idx])
+        
+    # torque controller
+    def set_desired_force(self, force: np.ndarray):
+        """Set the desired force/torque (Cartesian wrench) for torque control mode.
+
+        :param force: a numpy array of shape (6,) with fx, fy, fz, tx, ty, tz
+        """
+        assert force.shape == (6,)
+        self.desired_wrench = force
