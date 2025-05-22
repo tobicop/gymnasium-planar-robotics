@@ -91,7 +91,7 @@ import gymnasium as gym
 from gymnasium import logger
 import mujoco
 from gymnasium_planar_robotics import BasicPlanarRoboticsSingleAgentEnv
-from gymnasium_planar_robotics.utils import mujoco_utils
+from gymnasium_planar_robotics.utils import mujoco_utils, torque_control
 from gymnasium_planar_robotics import MoverImpedanceController
 from collections import OrderedDict
 
@@ -183,6 +183,9 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
         # impedance controller
         self.impedance_controller = None
 
+        #TODO: remove
+        self.torque_controller = None
+
         # cam config
         default_cam_config = {
             'distance': 0.8,
@@ -270,7 +273,11 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
             joint_mask=joint_mask,
             translational_stiffness=1.0,
             rotational_stiffness=0.1,
-            torque_mode=self.torque_control_mode,
+        )
+        # torque controller   TODO: remove/move
+        self.torque_controller = torque_control.MoverTorqueController(
+            model=self.model,
+            mover_joint_name=self.mover_joint_names[0],
         )
         self.reload_model()
 
@@ -304,7 +311,8 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
         if custom_model_xml_strings is None:
             custom_model_xml_strings = {}
         # actuators
-        if self.impedance_controller is not None:
+        #TODO: undo
+        if self.impedance_controller is not None and self.torque_controller is not None:
             mover_actuator_xml_str = '\n\n\t<actuator>' + '\n\t\t<!-- mover actuators -->'
             joint_name = self.mover_joint_names[self.idx_mover]
             if not self.torque_control_mode:
@@ -324,7 +332,10 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
                         + f'dyntype="none" gaintype="fixed" gainprm="{self.mover_mass} 0 0" biastype="none"/>'
                     )
 
-            mover_actuator_xml_str += self.impedance_controller.generate_actuator_xml_string(idx_mover=self.idx_mover)
+            #TODO: remove/undo
+                mover_actuator_xml_str += self.impedance_controller.generate_actuator_xml_string(idx_mover=self.idx_mover)
+            else:
+                mover_actuator_xml_str += self.torque_controller.generate_actuator_xml_string(idx_mover=self.idx_mover)
             mover_actuator_xml_str += '\n'
 
             mover_actuator_xml_str += '\t</actuator>'
@@ -418,12 +429,15 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
         # reload model with new start pos and goal pos
         self.reload_model(mover_start_xy_pos=start_qpos[:, :2])
 
+    #TODO: remove
     def torque_control_step(self, force: np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
         """Set the desired force/torque (Cartesian wrench) for torque control mode.
 
         :param force: a numpy array of shape (6,) with fx, fy, fz, tx, ty, tz
         """
-        self.impedance_controller.set_desired_force(force)
+        assert self.torque_control_mode
+
+        self.torque_controller.set_desired_force(force)
 
         # pass empty action (zeros) to execute step() while applying only the specified force wrench
         empty_action = np.zeros((self.num_movers * 2), dtype=np.float64)
@@ -460,17 +474,15 @@ class BenchmarkPushingEnv(BasicPlanarRoboticsSingleAgentEnv):
             model=self.model, data=self.data, actuator_name=self.mover_actuator_y_names[self.idx_mover], value=ctrl[0, 1]
         )
         # update impedance controller
-        pos_d = None
-        quat_d = None
-        if not self.torque_control_mode:
-            pos_d = np.array([0, 0, self.initial_mover_zpos + self.mover_size[2]])
-            quat_d = np.array([1, 0, 0, 0])
-        self.impedance_controller.update(
-            model=self.model,
-            data=self.data,
-            pos_d=pos_d,
-            quat_d=quat_d,
-        )
+        if self.torque_control_mode:    #TODO: remove
+            self.torque_controller.update(model=self.model, data=self.data)
+        else:
+            self.impedance_controller.update(
+                model=self.model,
+                data=self.data,
+                pos_d=np.array([0, 0, self.initial_mover_zpos + self.mover_size[2]]),
+                quat_d=np.array([1, 0, 0, 0]),
+            )
 
     def compute_terminated(
         self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict[str, any] | None = None
