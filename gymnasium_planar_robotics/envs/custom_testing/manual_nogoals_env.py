@@ -271,6 +271,9 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                 arrow_scale=0.2,
                 figure_size=(9, 9),
             )
+
+            # set/overwrite axis control value for manual control to the current max control value
+            self.matplotlib_2D_viewer.manual_controller.set_axis_control_value(self.max_dynamics[self.actuator_type])
     
     def _custom_xml_string_callback(self, custom_model_xml_strings: dict | None) -> dict[str, str]:
         """For each mover, this callback adds the appropriate actuator XML strings to the ``custom_model_xml_strings`` dictionary,

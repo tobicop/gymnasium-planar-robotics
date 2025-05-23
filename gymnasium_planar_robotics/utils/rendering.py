@@ -614,13 +614,13 @@ class ManualControl:
     :param viewer: An instance of Matplotlib2DViewer to interact with and control.
     """
 
-    ACCELERATION = 5.0
     MAX_BUF_LEN = 200
     RECORDING_FOLDER_NAME = "action_records"
 
     # pass a reference of Matplotlib2DViewer to access its methods
     def __init__(self, viewer: 'Matplotlib2DViewer') -> None:
         self.viewer = viewer
+        self.axis_control_value = 1.0       # should be set/overwritten by env or user
         self.action_buffer = []
         self.recording_active = False
         self.replay_active = False
@@ -654,48 +654,56 @@ class ManualControl:
         self.keys_pressed.discard(event.key.lower())
 
     def reset_kinematics(self):
-        """Reset the current acceleration values to zero. """
-        self.current_acc = np.array([0.0, 0.0], dtype=np.float64)
+        """Reset the current control values to zero. """
+        self.current_control = np.array([0.0, 0.0], dtype=np.float64)
+
+    def set_axis_control_value(self, axis_control_value: float):
+        """Set the value that is applied per axis/component when the respective key is pressed. Allows overriding
+        the default per-axis control value (e.g., for acceleration, velocity, or jerk).
+
+        :param axis_control_value: The new per-axis control value to use for manual key-based control.
+        """
+        self.axis_control_value = abs(axis_control_value)
 
     def _apply_key_kinematics(self):
         """Apply kinematic updates based on the currently pressed keys.
-        Updates the acceleration values for the controlled mover:
+        Updates the control values for the controlled mover:
         
-            - 'up': Negative acceleration along the x-axis (move upward).
-            - 'down': Positive acceleration along the x-axis (move downward).
-            - 'left': Negative acceleration along the y-axis (move leftward).
-            - 'right': Positive acceleration along the y-axis (move rightward).
+            - 'up': Negative movement along the x-axis (move upward).
+            - 'down': Positive movement along the x-axis (move downward).
+            - 'left': Negative movement along the y-axis (move leftward).
+            - 'right': Positive movement along the y-axis (move rightward).
         """
-        self.current_acc = np.zeros_like(self.current_acc)
+        self.current_control = np.zeros_like(self.current_control)
 
         if 'up' in self.keys_pressed:
-            self.current_acc[0] = -self.ACCELERATION
+            self.current_control[0] = -self.axis_control_value
         elif 'down' in self.keys_pressed:
-            self.current_acc[0] = self.ACCELERATION
+            self.current_control[0] = self.axis_control_value
         
         if 'left' in self.keys_pressed:
-            self.current_acc[1] = -self.ACCELERATION
+            self.current_control[1] = -self.axis_control_value
         elif 'right' in self.keys_pressed:
-            self.current_acc[1] = self.ACCELERATION
+            self.current_control[1] = self.axis_control_value
 
     def get_action_manual(self) -> np.ndarray:
-        """Get the current acceleration values based on the pressed keys and the current mover index.
-        If manual control is inactive, the acceleration values remain unchanged.
+        """Get the current control values based on the pressed keys and the current mover index.
+        If manual control is inactive, the control values remain unchanged.
 
         :return:
-            - A numpy array containing the current acceleration values
+            - A numpy array containing the current control values
             - An integer representing the index of the currently controlled mover
         """
         if self.viewer.manual_control_active:
             self._apply_key_kinematics()
                 
-        return self.current_acc.copy(), self.viewer.manual_control_idx
+        return self.current_control.copy(), self.viewer.manual_control_idx
 
     def _get_action_replay(self) -> np.ndarray:
         """Retrieve the next action from the replay buffer for all movers.
         Also the replay index is updated and if all actions have been processed, replay mode is deactivated.
 
-        :return: A numpy array of shape(2,) representing the retrieved acceleration values [action_x, action_y]
+        :return: A numpy array of shape(2,) representing the retrieved control values [action_x, action_y]
         """
         assert self.replay_active
 
@@ -711,7 +719,7 @@ class ManualControl:
         return action
 
     def overwrite_action(self, action_input: np.ndarray) -> np.ndarray:
-        """Overwrite the action for the respective mover(s) with acceleration values from replay and/or manual control.
+        """Overwrite the action for the respective mover(s) with control values from replay and/or manual control.
         If both are active and applied to the same mover, the manual control values have the higher priority.
         Additionally, save the modified action array to the buffer/file, if recording was enabled by the user.
 
