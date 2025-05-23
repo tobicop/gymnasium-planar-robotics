@@ -15,7 +15,9 @@ accelerations, and jerks have the units m, m/s, m/s² and m/s³, respectively.
 Action Space
 ------------
 
-The action space is continuous. If ``learn_jerk=True``, an action
+The action space is continuous. The type of action depends on the selected actuator type:
+
+- If ``actuator_type=JERK``, an action
 
 .. math::
     a_j := [j_{1x}, j_{1y}, ..., j_{nx}, j_{ny}]
@@ -38,6 +40,18 @@ represents the accelerations for each mover in x and y direction of the base fra
     a_{1x}, a_{1y}, ..., a_{nx}, a_{ny} \in [-a_{max},a_{max}]
 
 ``a_max`` is the maximum possible acceleration (see environment parameters) and n denotes the number of movers.
+
+- If ``actuator_type=VELOCITY``, an action
+
+.. math::
+    a_v := [v_{1x}, v_{1y}, ..., v_{nx}, v_{ny}]
+
+represents the velocities for each mover in x and y direction of the base frame (unit: m/s), where
+
+.. math::
+    v_{1x}, v_{1y}, ..., v_{nx}, v_{ny} \in [-v_{max},v_{max}]
+
+``v_max`` is the maximum possible velocity (see environment parameters) and n denotes the number of movers.
 
 Immediate Rewards
 -----------------
@@ -68,6 +82,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import logger
 import mujoco
+import enum
 from gymnasium_planar_robotics import BasicPlanarRoboticsSingleAgentEnv
 from gymnasium_planar_robotics.utils import mujoco_utils
 from gymnasium_planar_robotics import Matplotlib2DViewer
@@ -131,14 +146,19 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
 
     :param v_max: the maximum velocity, defaults to 2.0 [m/s]
     :param a_max: the maximum acceleration, defaults to 10.0 [m/s²]
-    :param j_max: the maximum jerk (only used if ``learn_jerk=True``), defaults to 100.0 [m/s³]
-    :param learn_jerk: whether to learn the jerk, defaults to False. If set to False, the acceleration is learned, i.e. the policy
-        output.
+    :param j_max: the maximum jerk, defaults to 100.0 [m/s³]
+    :param actuator_type: the actuator type to be used (position, velocity, acceleration, jerk) [CustomTestingEnv.ActuatorType]
     :param threshold_pos: the position threshold used to determine whether a mover has reached its goal position, defaults
         to 0.1 [m]
     :param use_mj_passive_viewer: whether the MuJoCo passive_viewer should be used, defaults to False. If set to False, the Gymnasium
         MuJoCo WindowViewer with custom overlays is used.
     """
+
+    class ActuatorType(enum.Enum):
+        POSITION = 0
+        VELOCITY = 1
+        ACCELERATION = 2
+        JERK = 3
 
     def __init__(
         self,
@@ -157,11 +177,11 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         v_max: float = 2.0,
         a_max: float = 10.0,
         j_max: float = 100.0,
-        learn_jerk: bool = False,
+        actuator_type: "ActuatorType" = ActuatorType.JERK,   # avoid issues with forward references
         threshold_pos: float = 0.1,
         use_mj_passive_viewer: bool = False,
     ) -> None:
-        self.learn_jerk = learn_jerk
+        self.actuator_type = actuator_type
 
         # cam config
         default_cam_config = {
@@ -187,10 +207,13 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             use_mj_passive_viewer=use_mj_passive_viewer,
         )
 
-        # maximum velocity, acceleration and jerk
-        self.v_max = v_max
-        self.a_max = a_max
-        self.j_max = j_max
+        # map maximum velocity, acceleration and jerk to actuator type
+        self.max_dynamics = {
+            self.ActuatorType.POSITION: None,
+            self.ActuatorType.VELOCITY: v_max,
+            self.ActuatorType.ACCELERATION: a_max,
+            self.ActuatorType.JERK: j_max,
+        }
 
         # position threshold in m
         self.threshold_pos = threshold_pos
@@ -210,8 +233,11 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         )
 
         # action space
-        as_low = -self.j_max if self.learn_jerk else -self.a_max
-        as_high = self.j_max if self.learn_jerk else self.a_max
+        #TODO: handle position!
+        if self.actuator_type == self.ActuatorType.POSITION:
+            raise ValueError("Position Actuator not fully implemented yet!")
+        as_low = -self.max_dynamics[self.actuator_type]
+        as_high = self.max_dynamics[self.actuator_type]
         self.action_space = gym.spaces.Box(low=as_low, high=as_high, shape=(self.num_movers * 2,), dtype='float64')
 
         # minimum and maximum possible mover (x,y)-positions
@@ -247,8 +273,13 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             )
     
     def _custom_xml_string_callback(self, custom_model_xml_strings: dict | None) -> dict[str, str]:
-        """For each mover, this callback adds actuators to the ``custom_model_xml_strings``-dict, depending on whether the jerk or
-        acceleration is the output of the policy.
+        """For each mover, this callback adds the appropriate actuator XML strings to the ``custom_model_xml_strings`` dictionary,
+        depending on the selected actuator type (jerk, acceleration, velocity, or position).
+
+        - For ``ActuatorType.JERK``: Adds MuJoCo general actuators with integrator dynamics for jerk control.
+        - For ``ActuatorType.ACCELERATION``: Adds MuJoCo general actuators for direct acceleration control.
+        - For ``ActuatorType.VELOCITY``: Adds MuJoCo velocity actuators for velocity control (further adjustments necessary).
+        - For ``ActuatorType.POSITION``: Adds MuJoCo position actuators for position control (not fully implemented).
 
         :param custom_model_xml_strings: the current ``custom_model_xml_strings``-dict which is modified by this callback
         :return: the modified the current ``custom_model_xml_strings``-dict
@@ -258,23 +289,38 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             joint_name = f'mover_joint_{idx_mover}'
             mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else self.mover_mass[idx_mover]
 
-            if self.learn_jerk:
-                mover_actuator_xml_str += (
-                    f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="integrator" '
-                    + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
-                    + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
-                    + f'dyntype="integrator" gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
-                    + '\n'
-                )
-            else:
-                # learn acceleration
-                mover_actuator_xml_str += (
-                    f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
-                    + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
-                    + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
-                    + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
-                    + '\n'
-                )
+            match self.actuator_type:
+                case self.ActuatorType.JERK:
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="integrator" '
+                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
+                        + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
+                        + f'dyntype="integrator" gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
+                        + '\n'
+                    )
+                case self.ActuatorType.ACCELERATION:
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
+                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                        + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
+                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                        + '\n'
+                    )
+                #TODO: fix/adjust!
+                case self.ActuatorType.VELOCITY:
+                    kv_gain = 4 * mover_mass # increase acceleration (dirty)
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
+                        + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'
+                        + '\n'
+                    )
+                #TODO: implement properly!
+                case self.ActuatorType.POSITION:
+                    mover_actuator_xml_str += (
+                        f'\n\t\t<position name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kp="{1}"/>'
+                        + f'\n\t\t<position name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kp="{1}"/>'
+                        + '\n'
+                    )
 
         mover_actuator_xml_str += '\t</actuator>'
 
@@ -373,18 +419,27 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             mover_name = self.mover_names[idx_mover]
             vel = self.get_mover_qvel(mover_name=mover_name, add_noise=True)[:2]
 
-            if self.learn_jerk:
-                acc = self.get_mover_qacc(mover_name=mover_name, add_noise=False)[:2]
-                next_acc_tmp, next_jerk = self.ensure_max_dyn_val(
-                    current_values=acc, max_value=self.a_max, next_derivs=action[idx_mover, :]
-                )
-                _, next_acc = self.ensure_max_dyn_val(current_values=vel, max_value=self.v_max, next_derivs=next_acc_tmp)
-                if (next_acc_tmp != next_acc).any():
-                    next_jerk = (next_acc - acc) / self.cycle_time
-                ctrl = next_jerk.copy()
-            else:
-                _, next_acc = self.ensure_max_dyn_val(current_values=vel, max_value=self.v_max, next_derivs=action[idx_mover, :])
-                ctrl = next_acc.copy()
+            match self.actuator_type:
+                case self.ActuatorType.JERK:
+                    acc = self.get_mover_qacc(mover_name=mover_name, add_noise=False)[:2]
+                    next_acc_tmp, next_jerk = self.ensure_max_dyn_val(
+                        current_values=acc, max_value=self.max_dynamics[self.ActuatorType.ACCELERATION], next_derivs=action[idx_mover, :]
+                    )
+                    _, next_acc = self.ensure_max_dyn_val(
+                        current_values=vel, max_value=self.max_dynamics[self.ActuatorType.VELOCITY], next_derivs=next_acc_tmp)
+                    if (next_acc_tmp != next_acc).any():
+                        next_jerk = (next_acc - acc) / self.cycle_time
+                    ctrl = next_jerk.copy()
+                case self.ActuatorType.ACCELERATION:
+                    _, next_acc = self.ensure_max_dyn_val(
+                        current_values=vel, max_value=self.max_dynamics[self.ActuatorType.VELOCITY], next_derivs=action[idx_mover, :])
+                    ctrl = next_acc.copy()
+                case self.ActuatorType.VELOCITY:
+                    ctrl = action[idx_mover].reshape((1,-1))
+                #TODO: add other types
+                case _:
+                    raise ValueError(f"ActuatorType {self.actuator_type.name} not implemented")
+
             mujoco_utils.set_actuator_ctrl(
                 model=self.model, data=self.data, actuator_name=self.mover_actuator_x_names[idx_mover], value=ctrl[0, 0]
             )
