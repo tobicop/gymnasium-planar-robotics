@@ -64,7 +64,6 @@ class MoverTorqueController:
         ctrl = (jac.T @ self.desired_wrench.reshape((6, 1))).flatten()
 
         # set controls
-        print(ctrl)
         for idx in range(0, 6):
             mujoco_utils.set_actuator_ctrl(model, data, actuator_name=self.actuator_names[idx], value=ctrl[idx])
 

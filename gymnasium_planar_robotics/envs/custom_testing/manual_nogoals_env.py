@@ -84,7 +84,7 @@ from gymnasium import logger
 import mujoco
 import enum
 from gymnasium_planar_robotics import BasicPlanarRoboticsSingleAgentEnv
-from gymnasium_planar_robotics.utils import mujoco_utils
+from gymnasium_planar_robotics.utils import mujoco_utils, torque_control
 from gymnasium_planar_robotics import Matplotlib2DViewer
 
 
@@ -159,11 +159,13 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         VELOCITY = 1
         ACCELERATION = 2
         JERK = 3
+        TORQUE = 10
 
     def __init__(
         self,
         layout_tiles: np.ndarray,
         num_movers: int,
+        #TODO: always use 2D plot?
         show_2D_plot: bool,
         mover_colors_2D_plot: list[str] | None = None,
         tile_params: dict[str, any] | None = None,
@@ -182,6 +184,8 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         use_mj_passive_viewer: bool = False,
     ) -> None:
         self.actuator_type = actuator_type
+        self.torque_control_mode = actuator_type == self.ActuatorType.TORQUE
+        self.torque_controller = None
 
         # cam config
         default_cam_config = {
@@ -213,6 +217,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             self.ActuatorType.VELOCITY: v_max,
             self.ActuatorType.ACCELERATION: a_max,
             self.ActuatorType.JERK: j_max,
+            self.ActuatorType.TORQUE: 1,    #TODO: change?
         }
 
         # position threshold in m
@@ -223,14 +228,6 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         self.show_2D_plot = show_2D_plot
         if self.show_2D_plot and mover_colors_2D_plot is None:
             raise ValueError('Please specify the colors of the movers for the 2D plot.')
-
-        # remember actuator names
-        self.mover_actuator_x_names = mujoco_utils.get_mujoco_type_names(
-            self.model, obj_type='actuator', name_pattern='mover_actuator_x'
-        )
-        self.mover_actuator_y_names = mujoco_utils.get_mujoco_type_names(
-            self.model, obj_type='actuator', name_pattern='mover_actuator_y'
-        )
 
         # action space
         #TODO: handle position!
@@ -254,6 +251,22 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         else:
             # self.c_shape == 'box'
             self.min_goal_dist = 2 * np.linalg.norm(self.c_size + self.c_size_offset, ord=2)
+        
+        # initialize torque controller if enabled
+        if self.torque_control_mode:
+            self.torque_controller = torque_control.MoverTorqueController(
+                model=self.model,
+                mover_joint_name=self.mover_joint_names[0],
+            )
+        self.reload_model()     # needed for some proper initialization (see pushing_env)
+
+        # remember actuator names
+        self.mover_actuator_x_names = mujoco_utils.get_mujoco_type_names(
+            self.model, obj_type='actuator', name_pattern='mover_actuator_x'
+        )
+        self.mover_actuator_y_names = mujoco_utils.get_mujoco_type_names(
+            self.model, obj_type='actuator', name_pattern='mover_actuator_y'
+        )
 
         # 2D plot
         if self.show_2D_plot:
@@ -292,40 +305,41 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             joint_name = f'mover_joint_{idx_mover}'
             mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else self.mover_mass[idx_mover]
 
-            match self.actuator_type:
-                case self.ActuatorType.JERK:
-                    mover_actuator_xml_str += (
-                        f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="integrator" '
-                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
-                        + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
-                        + f'dyntype="integrator" gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
-                        + '\n'
-                    )
-                case self.ActuatorType.ACCELERATION:
-                    mover_actuator_xml_str += (
-                        f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
-                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
-                        + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
-                        + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
-                        + '\n'
-                    )
-                #TODO: fix/adjust!
-                case self.ActuatorType.VELOCITY:
-                    kv_gain = 4 * mover_mass # increase acceleration (dirty)
-                    mover_actuator_xml_str += (
-                        f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
-                        + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'
-                        + '\n'
-                    )
-                #TODO: implement properly!
-                case self.ActuatorType.POSITION:
-                    mover_actuator_xml_str += (
-                        f'\n\t\t<position name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kp="{1}"/>'
-                        + f'\n\t\t<position name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kp="{1}"/>'
-                        + '\n'
-                    )
+            if self.torque_controller is not None and self.torque_control_mode:
+                # torque actuator
+                mover_actuator_xml_str += self.torque_controller.generate_actuator_xml_string(idx_mover=idx_mover)
+            else:
+                # kinematics actuators
+                match self.actuator_type:
+                    case self.ActuatorType.JERK:
+                        mover_actuator_xml_str += (
+                            f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="integrator" '
+                            + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
+                            + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" '
+                            + f'dyntype="integrator" gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none" actearly="true"/>'
+                        )
+                    case self.ActuatorType.ACCELERATION:
+                        mover_actuator_xml_str += (
+                            f'\n\t\t<general name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" dyntype="none" '
+                            + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                            + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
+                            + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
+                        )
+                    #TODO: fix/adjust!
+                    case self.ActuatorType.VELOCITY:
+                        kv_gain = 4 * mover_mass # increase acceleration (dirty)
+                        mover_actuator_xml_str += (
+                            f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
+                            + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'
+                        )
+                    #TODO: implement properly!
+                    case self.ActuatorType.POSITION:
+                        mover_actuator_xml_str += (
+                            f'\n\t\t<position name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kp="{1}"/>'
+                            + f'\n\t\t<position name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kp="{1}"/>'
+                        )
 
-        mover_actuator_xml_str += '\t</actuator>'
+        mover_actuator_xml_str += '\n\t</actuator>'
 
         if custom_model_xml_strings is None:
             custom_model_xml_strings = {}
@@ -338,13 +352,11 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
 
         return custom_model_xml_strings
 
-    def reload_model(self, mover_start_xy_pos: np.ndarray) -> None:
+    def reload_model(self, mover_start_xy_pos: np.ndarray | None = None) -> None:
         """Generate a new model xml string with new start and goal positions and reload the model. In this environment, it is necessary
         to reload the model to ensure that the actuators work as expected.
 
         :param mover_start_xy_pos: a numpy array of shape (num_movers,2) containing the (x,y) starting positions of each mover.
-        :param mover_goal_xy_pos: a numpy array of shape (num_movers_with_goals,2) containing the (x,y) goal positions of the
-            movers (num_movers_with_goals <= num_movers)
         """
         custom_model_xml_strings = self._custom_xml_string_callback(custom_model_xml_strings=self.custom_model_xml_strings_before_cb)
         model_xml_str = self.generate_model_xml_string(
@@ -410,6 +422,19 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         # reload model with new start pos and goal pos
         self.reload_model(mover_start_xy_pos=start_qpos[:, :2])
 
+    def torque_control_step(self, force: np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
+        """Set the desired force/torque (Cartesian wrench) for torque control mode.
+
+        :param force: a numpy array of shape (6,) with fx, fy, fz, tx, ty, tz
+        """
+        assert self.torque_control_mode
+
+        self.torque_controller.set_desired_force(force)
+
+        # pass empty action (zeros) to execute step() while applying only the specified force wrench
+        empty_action = np.zeros((self.num_movers * 2), dtype=np.float64)
+        return self.step(empty_action)
+    
     def _mujoco_step_callback(self, action: np.ndarray) -> None:
         """Apply the next action, i.e. it sets the jerk or acceleration, ensuring the minimum and maximum velocity and acceleration
         (for one cycle).
@@ -437,8 +462,10 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                     _, next_acc = self.ensure_max_dyn_val(
                         current_values=vel, max_value=self.max_dynamics[self.ActuatorType.VELOCITY], next_derivs=action[idx_mover, :])
                     ctrl = next_acc.copy()
-                case self.ActuatorType.VELOCITY:
+                case self.ActuatorType.VELOCITY | self.ActuatorType.TORQUE:   #TODO: change back to velocity only
                     ctrl = action[idx_mover].reshape((1,-1))
+                #case self.ActuatorType.TORQUE:
+                #    pass        #TODO: change! implement anything?
                 #TODO: add other types
                 case _:
                     raise ValueError(f"ActuatorType {self.actuator_type.name} not implemented")
@@ -450,6 +477,9 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             mujoco_utils.set_actuator_ctrl(
                 model=self.model, data=self.data, actuator_name=self.mover_actuator_y_names[idx_mover], value=ctrl[0, 1]
             )
+
+            # update torque controller
+            self.torque_controller.update(model=self.model, data=self.data)
 
     def _render_callback(self) -> None:
         """Update the Matplotlib2DViewer if ``show_2D_plot=True``."""
