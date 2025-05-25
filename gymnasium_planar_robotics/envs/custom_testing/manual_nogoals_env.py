@@ -211,13 +211,15 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             use_mj_passive_viewer=use_mj_passive_viewer,
         )
 
+        force_acceleration_limit = abs(self.mover_mass * a_max)     # ensures acceleration limit (F = ma)
+
         # map maximum velocity, acceleration and jerk to actuator type
         self.max_dynamics = {
             self.ActuatorType.POSITION: None,
             self.ActuatorType.VELOCITY: v_max,
             self.ActuatorType.ACCELERATION: a_max,
             self.ActuatorType.JERK: j_max,
-            self.ActuatorType.TORQUE: 1,    #TODO: change?
+            self.ActuatorType.TORQUE: force_acceleration_limit  # used for defining action_space
         }
 
         # position threshold in m
@@ -257,6 +259,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             self.torque_controller = torque_control.MoverTorqueController(
                 model=self.model,
                 mover_joint_name=self.mover_joint_names[0],
+                force_limit=force_acceleration_limit,
             )
         self.reload_model()     # needed for some proper initialization (see pushing_env)
 
@@ -436,11 +439,16 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         return self.step(empty_action)
     
     def _mujoco_step_callback(self, action: np.ndarray) -> None:
-        """Apply the next action, i.e. it sets the jerk or acceleration, ensuring the minimum and maximum velocity and acceleration
-        (for one cycle).
+        """Apply the next action, i.e. it sets the jerk, acceleration or velocity, ensuring the minimum and maximum values
+        (for one cycle). The force limits of the torque controller are handled there.
 
         :param action: a numpy array of shape (num_movers * 2,), which specifies the next action (jerk or acceleration)
         """
+        if self.torque_control_mode:
+            # only update the torque controller, skip the rest
+            self.torque_controller.update(model=self.model, data=self.data)
+            return
+    
         action = action.reshape((self.num_movers, 2))
 
         for idx_mover in range(0, self.num_movers):
@@ -462,11 +470,9 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                     _, next_acc = self.ensure_max_dyn_val(
                         current_values=vel, max_value=self.max_dynamics[self.ActuatorType.VELOCITY], next_derivs=action[idx_mover, :])
                     ctrl = next_acc.copy()
-                case self.ActuatorType.VELOCITY | self.ActuatorType.TORQUE:   #TODO: change back to velocity only
+                case self.ActuatorType.VELOCITY:
                     ctrl = action[idx_mover].reshape((1,-1))
-                #case self.ActuatorType.TORQUE:
-                #    pass        #TODO: change! implement anything?
-                #TODO: add other types
+                #TODO: add position actuator(?)
                 case _:
                     raise ValueError(f"ActuatorType {self.actuator_type.name} not implemented")
 
@@ -477,9 +483,6 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             mujoco_utils.set_actuator_ctrl(
                 model=self.model, data=self.data, actuator_name=self.mover_actuator_y_names[idx_mover], value=ctrl[0, 1]
             )
-
-            # update torque controller
-            self.torque_controller.update(model=self.model, data=self.data)
 
     def _render_callback(self) -> None:
         """Update the Matplotlib2DViewer if ``show_2D_plot=True``."""
