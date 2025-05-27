@@ -184,8 +184,8 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         use_mj_passive_viewer: bool = False,
     ) -> None:
         self.actuator_type = actuator_type
+        self.torque_controllers = []
         self.torque_control_mode = actuator_type == self.ActuatorType.TORQUE
-        self.torque_controller = None
         self.torque_joint_mask = np.array([1, 1, 0, 0, 0, 1], dtype=bool)   # fz, tx, ty disabled in this env
 
         # cam config
@@ -212,7 +212,9 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             use_mj_passive_viewer=use_mj_passive_viewer,
         )
 
-        force_acceleration_limit = abs(self.mover_mass * a_max)     # ensures acceleration limit (F = ma)
+        # ensures acceleration limit (F = ma), gets clipped anyway by default
+        max_mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else max(self.mover_mass)
+        force_acceleration_limit = abs(max_mover_mass * a_max)
 
         # map maximum velocity, acceleration and jerk to actuator type
         self.max_dynamics = {
@@ -232,7 +234,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         if self.show_2D_plot and mover_colors_2D_plot is None:
             raise ValueError('Please specify the colors of the movers for the 2D plot.')
 
-        # action space
+        # action space (for now only used for kinematics, not for dynamics)
         #TODO: handle position and torque action space sampling
         if self.actuator_type == self.ActuatorType.POSITION:
             raise ValueError(f"{self.actuator_type.name} Actuator action space not implemented yet!")
@@ -255,13 +257,18 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             # self.c_shape == 'box'
             self.min_goal_dist = 2 * np.linalg.norm(self.c_size + self.c_size_offset, ord=2)
         
-        # initialize torque controller if enabled
+        # initialize torque controllers for all movers if enabled
         if self.torque_control_mode:
-            self.torque_controller = torque_control.MoverTorqueController(
-                model=self.model,
-                mover_joint_name=self.mover_joint_names[0],
-                force_limit=force_acceleration_limit,
-            )
+            for idx in range(self.num_movers):
+                mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else self.mover_mass[idx]
+                force_limit = abs(mover_mass * a_max)       # ensures acceleration limit (F = ma)
+                self.torque_controllers.append(
+                    torque_control.MoverTorqueController(
+                        model=self.model,
+                        mover_joint_name=self.mover_joint_names[idx],
+                        force_limit=force_limit,
+                    )
+                )
         self.reload_model()     # needed for some proper initialization (see pushing_env)
 
         # remember actuator names
@@ -305,15 +312,16 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         :return: the modified the current ``custom_model_xml_strings``-dict
         """
         mover_actuator_xml_str = '\n\n\t<actuator>' + '\n\t\t<!-- mover actuators -->'
+        
         for idx_mover in range(0, self.num_movers):
             joint_name = f'mover_joint_{idx_mover}'
-            mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else self.mover_mass[idx_mover]
 
-            if self.torque_controller is not None and self.torque_control_mode:
+            if self.torque_control_mode and self.torque_controllers:
                 # torque actuator
-                mover_actuator_xml_str += self.torque_controller.generate_actuator_xml_string(idx_mover=idx_mover)
+                mover_actuator_xml_str += self.torque_controllers[idx_mover].generate_actuator_xml_string(idx_mover=idx_mover)
             else:
                 # kinematics actuators
+                mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else self.mover_mass[idx_mover]
                 match self.actuator_type:
                     case self.ActuatorType.JERK:
                         mover_actuator_xml_str += (
@@ -431,23 +439,25 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         - If torque control mode is enabled, returns a sampled 2D translation force from the torque controller.
         - Otherwise, samples an action from the environment's action space (jerk, acceleration, or velocity).
 
-        :return: A numpy array representing a valid action for the current actuator type.
+        :return: A numpy array representing a valid action for the current actuator type, per mover.
         """
         if self.torque_control_mode:
-            return self.torque_controller.sample_translation_2d()
+            return np.stack([tc.sample_translation_2d() for tc in self.torque_controllers], axis=0)
         # else: standard kinematics (jerk, acceleration, velocity)
         return self.action_space.sample()
     
     def torque_control_step(self, force: np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
         """Set the desired force/torque (Cartesian wrench) for torque control mode.
 
-        :param force: a numpy array of shape (6,) with fx, fy, fz, tx, ty, tz (fz, tx, ty disabled in this env)
+        :param force: a numpy array of shape (num_movers, 6) with fx, fy, fz, tx, ty, tz (fz, tx, ty disabled in this env)
         """
         assert self.torque_control_mode
+        assert force.shape == (self.num_movers, 6)
 
         # fz, tx, ty disabled in this env
-        self.torque_controller.set_desired_force(force * self.torque_joint_mask)
-
+        for idx, tc in enumerate(self.torque_controllers):
+            tc.set_desired_force(force[idx] * self.torque_joint_mask)
+        
         # pass empty action (zeros) to execute step() while applying only the specified force wrench
         empty_action = np.zeros((self.num_movers * 2), dtype=np.float64)
         return super().step(empty_action)
@@ -476,8 +486,9 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         :param action: a numpy array of shape (num_movers * 2,), which specifies the next action (jerk or acceleration)
         """
         if self.torque_control_mode:
-            # only update the torque controller, skip the rest
-            self.torque_controller.update(model=self.model, data=self.data)
+            # only update the torque controllers, skip the rest
+            for tc in self.torque_controllers:
+                tc.update(model=self.model, data=self.data)
             return
     
         action = action.reshape((self.num_movers, 2))

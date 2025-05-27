@@ -75,7 +75,7 @@ class MoverTorqueController:
             if norm > self.force_limit and norm > 0:
                 ctrl[:3] = force_vec * (self.force_limit / norm)
 
-        for idx in range(0, 6):
+        for idx in range(self.mover_dofnum):
             mujoco_utils.set_actuator_ctrl(model, data, actuator_name=self.actuator_names[idx], value=ctrl[idx])
 
     def set_desired_force(self, force: np.ndarray):
