@@ -186,6 +186,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         self.actuator_type = actuator_type
         self.torque_control_mode = actuator_type == self.ActuatorType.TORQUE
         self.torque_controller = None
+        self.torque_joint_mask = np.array([1, 1, 0, 0, 0, 1], dtype=bool)   # fz, tx, ty disabled in this env
 
         # cam config
         default_cam_config = {
@@ -232,9 +233,9 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             raise ValueError('Please specify the colors of the movers for the 2D plot.')
 
         # action space
-        #TODO: handle position!
+        #TODO: handle position and torque action space sampling
         if self.actuator_type == self.ActuatorType.POSITION:
-            raise ValueError("Position Actuator not fully implemented yet!")
+            raise ValueError(f"{self.actuator_type.name} Actuator action space not implemented yet!")
         as_low = -self.max_dynamics[self.actuator_type]
         as_high = self.max_dynamics[self.actuator_type]
         self.action_space = gym.spaces.Box(low=as_low, high=as_high, shape=(self.num_movers * 2,), dtype='float64')
@@ -428,15 +429,33 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
     def torque_control_step(self, force: np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
         """Set the desired force/torque (Cartesian wrench) for torque control mode.
 
-        :param force: a numpy array of shape (6,) with fx, fy, fz, tx, ty, tz
+        :param force: a numpy array of shape (6,) with fx, fy, fz, tx, ty, tz (fz, tx, ty disabled in this env)
         """
         assert self.torque_control_mode
 
-        self.torque_controller.set_desired_force(force)
+        # fz, tx, ty disabled in this env
+        self.torque_controller.set_desired_force(force * self.torque_joint_mask)
 
         # pass empty action (zeros) to execute step() while applying only the specified force wrench
         empty_action = np.zeros((self.num_movers * 2), dtype=np.float64)
-        return self.step(empty_action)
+        return super().step(empty_action)
+    
+    # override function for torque controller support
+    def step(self, action: int | np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
+        """Take a step in the environment using the provided action.
+
+        If torque control mode is enabled, the action is interpreted as a force/torque vector and handled by
+        `torque_control_step()`. Otherwise, the action is passed to the parent class's `step()` method.
+
+        :param action: The action to take. In torque control mode, this should be a numpy array of shape (6,) representing
+                       the desired force/torque (fx, fy, fz, tx, ty, tz). Otherwise, it should match the action format for
+                       the selected actuator type.
+        :return: A tuple containing (observation, reward, terminated, truncated, info) as defined by the environment.
+        """
+        if self.torque_control_mode:
+            return self.torque_control_step(action)
+        # else
+        return super().step(action)
     
     def _mujoco_step_callback(self, action: np.ndarray) -> None:
         """Apply the next action, i.e. it sets the jerk, acceleration or velocity, ensuring the minimum and maximum values
