@@ -82,3 +82,23 @@ class MoverTorqueController:
         """
         assert force.shape == (6,)
         self.desired_wrench = force
+
+    def sample_translation_2d(self) -> np.ndarray:
+        """Sample a random 6D force/torque vector [fx, fy, fz, tx, ty, tz] such that:
+        - The vector [fx, fy] has a uniformly random direction in 2D.
+        - The magnitude is uniformly sampled in [0, force_limit) (which depends on a_max by default).
+        - The result is a 6D vector (np.ndarray) with all other values being zero.
+        """
+        # uniform direction in 2D
+        angle = np.random.uniform(0, 2 * np.pi)
+        # uniform magnitude in [0, a_max)
+        mag = np.random.uniform(0, self.force_limit)
+        
+        # scale components
+        fx = mag * np.cos(angle)
+        fy = mag * np.sin(angle)
+
+        force = np.zeros(6)
+        force[0] = fx
+        force[1] = fy
+        return force

@@ -426,6 +426,18 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         # reload model with new start pos and goal pos
         self.reload_model(mover_start_xy_pos=start_qpos[:, :2])
 
+    def sample_action(self) -> np.ndarray:
+        """Sample a valid action for the current actuator type:
+        - If torque control mode is enabled, returns a sampled 2D translation force from the torque controller.
+        - Otherwise, samples an action from the environment's action space (jerk, acceleration, or velocity).
+
+        :return: A numpy array representing a valid action for the current actuator type.
+        """
+        if self.torque_control_mode:
+            return self.torque_controller.sample_translation_2d()
+        # else: standard kinematics (jerk, acceleration, velocity)
+        return self.action_space.sample()
+    
     def torque_control_step(self, force: np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, any]]:
         """Set the desired force/torque (Cartesian wrench) for torque control mode.
 
