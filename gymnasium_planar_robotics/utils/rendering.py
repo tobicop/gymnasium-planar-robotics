@@ -313,8 +313,7 @@ class Matplotlib2DViewer:
     :param arrow_scale: the scaling factor of the arrow length, which displays the current (x,y)-velocity of a mover, defaults
         to 0.3
     :param figure_size: the size of the matplotlib figure, defaults to (7,7)
-    :param key_press_callback: a callback function that is called when a key is pressed, defaults to None
-    :param key_release_callback: a callback function that is called when a key is released, defaults to None
+    :param torque_mode: true if torque controller is used, false for using kinematics actuators (jerk, acceleration etc.)
     """
 
     def __init__(
@@ -331,6 +330,7 @@ class Matplotlib2DViewer:
         c_size_offset: float = 0.0,
         arrow_scale: float = 0.3,
         figure_size: tuple = (7, 7),
+        torque_mode: bool = False,
     ) -> None:
         # mover params
         self.num_movers = num_movers
@@ -344,6 +344,8 @@ class Matplotlib2DViewer:
         self.c_shape = c_shape
         self.c_size = c_size
         self.c_size_offset = c_size_offset
+
+        self.torque_mode = torque_mode
 
         if self.mover_sizes.shape == (3,):
             self.mover_sizes = np.tile(mover_sizes, reps=(self.num_movers, 1))
@@ -686,7 +688,7 @@ class ManualControl:
         elif 'right' in self.keys_pressed:
             self.current_control[1] = self.axis_control_value
 
-    def get_action_manual(self) -> np.ndarray:
+    def get_action_manual(self) -> tuple[np.ndarray, int]:
         """Get the current control values based on the pressed keys and the current mover index.
         If manual control is inactive, the control values remain unchanged.
 
@@ -699,11 +701,12 @@ class ManualControl:
                 
         return self.current_control.copy(), self.viewer.manual_control_idx
 
+    #TODO: add support for torque controller?
     def _get_action_replay(self) -> np.ndarray:
         """Retrieve the next action from the replay buffer for all movers.
         Also the replay index is updated and if all actions have been processed, replay mode is deactivated.
 
-        :return: A numpy array of shape(2,) representing the retrieved control values [action_x, action_y]
+        :return: A numpy array representing the retrieved control values for all movers.
         """
         assert self.replay_active
 
@@ -726,7 +729,10 @@ class ManualControl:
         :param action_input: A numpy array of shape (num_movers,2) representing the actions for all movers (to be overwritten)
         :return: A numpy array of the same shape as `action_input`, with the actions for the relevant mover(s) overwritten
         """
-        assert len(action_input) == 2 * self.viewer.num_movers
+        if self.viewer.torque_mode:
+            assert action_input.shape == (self.viewer.num_movers, 6)
+        else:
+            assert action_input.shape == (2 * self.viewer.num_movers, )
         action_output = action_input.copy()     # copy to avoid changing the original array
         
         # if replay is active, overwrite the controlled mover's action
@@ -737,7 +743,11 @@ class ManualControl:
         #TODO: what to do if both replay and manual control are active?
         if self.viewer.manual_control_active:
             action_manual, mover_idx = self.get_action_manual()
-            action_output[mover_idx*2:(mover_idx+1)*2] = action_manual
+            # if using torque controller, write to 6 DoF wrench vector, else use standard action vector
+            if self.viewer.torque_mode:
+                action_output[mover_idx][0:2] = action_manual
+            else:
+                action_output[mover_idx*2:(mover_idx+1)*2] = action_manual
 
         #TODO: if possible, move somewhere where it will be executed every time (e.g. env.step())
         # append current action to buffer if recording is enabled
@@ -748,6 +758,7 @@ class ManualControl:
         # return unchanged input if neither manual control nor replay is active
         return action_output
 
+    #TODO: add support for torque controller?
     def start_recording(self, filename: str = ""):
         """
         Start recording the actions performed during manual control, which are stored in a buffer and written to a file when the
@@ -798,6 +809,7 @@ class ManualControl:
 
             self.action_buffer = []
 
+    #TODO: add support for torque controller?
     def load_actions(self, file_prefix: str) -> None:
         """Load recorded actions from a CSV file into the replay buffer for replay mode.
 

@@ -294,6 +294,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                 c_size_offset=self.c_size_offset,
                 arrow_scale=0.2,
                 figure_size=(9, 9),
+                torque_mode=self.torque_control_mode,
             )
 
             # set/overwrite axis control value for manual control to the current max control value
