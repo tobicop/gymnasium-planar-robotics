@@ -188,6 +188,9 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         self.torque_control_mode = actuator_type == self.ActuatorType.TORQUE
         self.torque_joint_mask = np.array([1, 1, 0, 0, 0, 1], dtype=bool)   # fz, tx, ty disabled in this env
 
+        # initialize for first execution of _custom_xml_string_callback(), will be set properly by BasicPlanarRoboticsEnv afterwards
+        self.cycle_time = 1/1000
+
         # cam config
         default_cam_config = {
             'distance': 1.1,
@@ -217,8 +220,8 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         force_acceleration_limit = abs(max_mover_mass * a_max)
 
         # map maximum velocity, acceleration and jerk to actuator type
-        self.max_dynamics = {
-            self.ActuatorType.POSITION: None,
+        self.motion_constraints = {
+            self.ActuatorType.POSITION: 1,
             self.ActuatorType.VELOCITY: v_max,
             self.ActuatorType.ACCELERATION: a_max,
             self.ActuatorType.JERK: j_max,
@@ -234,14 +237,6 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         if self.show_2D_plot and mover_colors_2D_plot is None:
             raise ValueError('Please specify the colors of the movers for the 2D plot.')
 
-        # action space (for now only used for kinematics, not for dynamics)
-        #TODO: handle position and torque action space sampling
-        if self.actuator_type == self.ActuatorType.POSITION:
-            raise ValueError(f"{self.actuator_type.name} Actuator action space not implemented yet!")
-        as_low = -self.max_dynamics[self.actuator_type]
-        as_high = self.max_dynamics[self.actuator_type]
-        self.action_space = gym.spaces.Box(low=as_low, high=as_high, shape=(self.num_movers * 2,), dtype='float64')
-
         # minimum and maximum possible mover (x,y)-positions
         safety_margin = self.c_size + self.c_size_offset_wall + self.c_size_offset
         self.min_xy_pos = np.zeros(2) + safety_margin
@@ -249,6 +244,20 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             np.array([np.max(self.x_pos_tiles) + (self.tile_size[0] / 2), np.max(self.y_pos_tiles) + (self.tile_size[1] / 2)])
             - safety_margin
         )
+
+        # action space (for now only used for kinematics, not for dynamics)
+        #TODO: handle torque action space sampling
+        if self.actuator_type == self.ActuatorType.POSITION:
+            # use absolute position limits (possible mover positions)
+            as_low = self.min_xy_pos
+            as_high = self.max_xy_pos
+            as_shape = (2,)
+        else:
+            # use defined motion constraints
+            as_low = -self.motion_constraints[self.actuator_type]
+            as_high = self.motion_constraints[self.actuator_type]
+            as_shape = (self.num_movers * 2,)
+        self.action_space = gym.spaces.Box(low=as_low, high=as_high, shape=as_shape, dtype='float64')
 
         # minimum distance between any two goals
         if self.c_shape == 'circle':
@@ -298,7 +307,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             )
 
             # set/overwrite axis control value for manual control to the current max control value
-            self.matplotlib_2D_viewer.manual_controller.set_axis_control_value(self.max_dynamics[self.actuator_type])
+            self.matplotlib_2D_viewer.manual_controller.set_axis_control_value(self.motion_constraints[self.actuator_type])
     
     def _custom_xml_string_callback(self, custom_model_xml_strings: dict | None) -> dict[str, str]:
         """For each mover, this callback adds the appropriate actuator XML strings to the ``custom_model_xml_strings`` dictionary,
@@ -345,11 +354,12 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                             f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
                             + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'
                         )
-                    #TODO: implement properly!
                     case self.ActuatorType.POSITION:
+                        # velocity actuator + separate (custom) controller
+                        kv_gain = mover_mass / self.cycle_time     # kv = mover_mass * 1/timestep
                         mover_actuator_xml_str += (
-                            f'\n\t\t<position name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kp="{1}"/>'
-                            + f'\n\t\t<position name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kp="{1}"/>'
+                            f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
+                            + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'                         
                         )
 
         mover_actuator_xml_str += '\n\t</actuator>'
@@ -496,26 +506,56 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
 
         for idx_mover in range(0, self.num_movers):
             mover_name = self.mover_names[idx_mover]
-            vel = self.get_mover_qvel(mover_name=mover_name, add_noise=True)[:2]
+            current_vel = self.get_mover_qvel(mover_name=mover_name, add_noise=True)[:2]
 
             match self.actuator_type:
                 case self.ActuatorType.JERK:
                     acc = self.get_mover_qacc(mover_name=mover_name, add_noise=False)[:2]
                     next_acc_tmp, next_jerk = self.ensure_max_dyn_val(
-                        current_values=acc, max_value=self.max_dynamics[self.ActuatorType.ACCELERATION], next_derivs=action[idx_mover, :]
+                        current_values=acc, max_value=self.motion_constraints[self.ActuatorType.ACCELERATION], next_derivs=action[idx_mover, :]
                     )
                     _, next_acc = self.ensure_max_dyn_val(
-                        current_values=vel, max_value=self.max_dynamics[self.ActuatorType.VELOCITY], next_derivs=next_acc_tmp)
+                        current_values=current_vel, max_value=self.motion_constraints[self.ActuatorType.VELOCITY], next_derivs=next_acc_tmp)
                     if (next_acc_tmp != next_acc).any():
                         next_jerk = (next_acc - acc) / self.cycle_time
                     ctrl = next_jerk.copy()
                 case self.ActuatorType.ACCELERATION:
                     _, next_acc = self.ensure_max_dyn_val(
-                        current_values=vel, max_value=self.max_dynamics[self.ActuatorType.VELOCITY], next_derivs=action[idx_mover, :])
+                        current_values=current_vel, max_value=self.motion_constraints[self.ActuatorType.VELOCITY], next_derivs=action[idx_mover, :])
                     ctrl = next_acc.copy()
                 case self.ActuatorType.VELOCITY:
-                    ctrl = action[idx_mover].reshape((1,-1))
-                #TODO: add position actuator(?)
+                    ctrl = action[idx_mover].reshape((1, -1))
+                    #TODO: clip values here as well?
+                case self.ActuatorType.POSITION:
+                    #TODO: move P-Controller to its own function?
+                    #TODO: use np.allclose for floating point safety?
+                    #TODO: use ensure_max_dyn_val instead of manual clipping?
+                    #TODO: actual acc and vel values slightly exceed limits, fix needed(?)
+
+                    # simple P-controller, moving to absolute position
+                    kp = 50      # proportional gain
+                    current_pos = self.get_mover_qpos(mover_name=mover_name)[:2]
+                    error = action[idx_mover] - current_pos
+                    desired_vel = kp * error
+
+                    # clip velocity
+                    vel_norm = np.linalg.norm(desired_vel)
+                    if vel_norm > self.motion_constraints[self.ActuatorType.VELOCITY] and vel_norm > 0:
+                        desired_vel *= self.motion_constraints[self.ActuatorType.VELOCITY] / vel_norm
+                    
+                    # compute acceleration
+                    desired_acc = (desired_vel - current_vel) / self.cycle_time
+
+                    # clip acceleration
+                    a_max = self.motion_constraints[self.ActuatorType.ACCELERATION]
+                    acc_norm = np.linalg.norm(desired_acc)
+                    if acc_norm > a_max and acc_norm > 0:
+                        desired_acc *= a_max / acc_norm
+
+                    # update with velocity and acceleration within limits
+                    next_vel = current_vel + desired_acc * self.cycle_time
+
+                    ctrl = next_vel.reshape((1, -1))
                 case _:
                     raise ValueError(f"ActuatorType {self.actuator_type.name} not implemented")
 
