@@ -529,31 +529,31 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                 case self.ActuatorType.POSITION:
                     #TODO: move P-Controller to its own function?
                     #TODO: use np.allclose for floating point safety?
-                    #TODO: use ensure_max_dyn_val instead of manual clipping?
-                    #TODO: actual acc and vel values slightly exceed limits, fix needed(?)
+
+                    v_max = self.motion_constraints[self.ActuatorType.VELOCITY]
+                    a_max = self.motion_constraints[self.ActuatorType.ACCELERATION]
 
                     # simple P-controller, moving to absolute position
-                    kp = 50      # proportional gain
+                    kp = 10      # proportional gain
                     current_pos = self.get_mover_qpos(mover_name=mover_name)[:2]
                     error = action[idx_mover] - current_pos
                     desired_vel = kp * error
 
-                    # clip velocity
-                    vel_norm = np.linalg.norm(desired_vel)
-                    if vel_norm > self.motion_constraints[self.ActuatorType.VELOCITY] and vel_norm > 0:
-                        desired_vel *= self.motion_constraints[self.ActuatorType.VELOCITY] / vel_norm
-                    
-                    # compute acceleration
+                    # compute acceleration to reach desired velocity
                     desired_acc = (desired_vel - current_vel) / self.cycle_time
 
-                    # clip acceleration
-                    a_max = self.motion_constraints[self.ActuatorType.ACCELERATION]
+                    # clip acceleration (happens when current_vel is close to v_max)
                     acc_norm = np.linalg.norm(desired_acc)
                     if acc_norm > a_max and acc_norm > 0:
                         desired_acc *= a_max / acc_norm
 
-                    # update with velocity and acceleration within limits
+                    # update with acceleration within limits
                     next_vel = current_vel + desired_acc * self.cycle_time
+
+                    # clip velocity
+                    vel_norm = np.linalg.norm(next_vel)
+                    if vel_norm > v_max and vel_norm > 0:
+                        next_vel *= v_max / vel_norm
 
                     ctrl = next_vel.reshape((1, -1))
                 case _:
