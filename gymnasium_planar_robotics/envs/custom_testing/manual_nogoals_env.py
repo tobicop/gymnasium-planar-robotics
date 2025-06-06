@@ -347,19 +347,12 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                             + f'\n\t\t<general name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" dyntype="none" '
                             + f'gaintype="fixed" gainprm="{mover_mass} 0 0" biastype="none"/>'
                         )
-                    #TODO: fix/adjust!
-                    case self.ActuatorType.VELOCITY:
-                        kv_gain = 4 * mover_mass # increase acceleration (dirty)
-                        mover_actuator_xml_str += (
-                            f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
-                            + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'
-                        )
-                    case self.ActuatorType.POSITION:
-                        # velocity actuator + separate (custom) controller
+                    case self.ActuatorType.VELOCITY | self.ActuatorType.POSITION:
+                        # position control uses velocity actuators + separate (custom) controller
                         kv_gain = mover_mass / self.cycle_time     # kv = mover_mass * 1/timestep
                         mover_actuator_xml_str += (
                             f'\n\t\t<velocity name="mover_actuator_x_{idx_mover}" joint="{joint_name}" gear="1 0 0 0 0 0" kv="{kv_gain}"/>'
-                            + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'                         
+                            + f'\n\t\t<velocity name="mover_actuator_y_{idx_mover}" joint="{joint_name}" gear="0 1 0 0 0 0" kv="{kv_gain}"/>'
                         )
 
         mover_actuator_xml_str += '\n\t</actuator>'
@@ -524,38 +517,25 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                         current_values=current_vel, max_value=self.motion_constraints[self.ActuatorType.VELOCITY], next_derivs=action[idx_mover, :])
                     ctrl = next_acc.copy()
                 case self.ActuatorType.VELOCITY:
-                    ctrl = action[idx_mover].reshape((1, -1))
-                    #TODO: clip values here as well?
+                    ctrl = self.compute_next_velocity(
+                        current_vel=current_vel,
+                        desired_vel=action[idx_mover],
+                        v_max=self.motion_constraints[self.ActuatorType.VELOCITY],
+                        a_max=self.motion_constraints[self.ActuatorType.ACCELERATION],
+                    )
                 case self.ActuatorType.POSITION:
-                    #TODO: move P-Controller to its own function?
-                    #TODO: use np.allclose for floating point safety?
-
-                    v_max = self.motion_constraints[self.ActuatorType.VELOCITY]
-                    a_max = self.motion_constraints[self.ActuatorType.ACCELERATION]
-
                     # simple P-controller, moving to absolute position
                     kp = 10      # proportional gain
                     current_pos = self.get_mover_qpos(mover_name=mover_name)[:2]
                     error = action[idx_mover] - current_pos
                     desired_vel = kp * error
 
-                    # compute acceleration to reach desired velocity
-                    desired_acc = (desired_vel - current_vel) / self.cycle_time
-
-                    # clip acceleration (happens when current_vel is close to v_max)
-                    acc_norm = np.linalg.norm(desired_acc)
-                    if acc_norm > a_max and acc_norm > 0:
-                        desired_acc *= a_max / acc_norm
-
-                    # update with acceleration within limits
-                    next_vel = current_vel + desired_acc * self.cycle_time
-
-                    # clip velocity
-                    vel_norm = np.linalg.norm(next_vel)
-                    if vel_norm > v_max and vel_norm > 0:
-                        next_vel *= v_max / vel_norm
-
-                    ctrl = next_vel.reshape((1, -1))
+                    ctrl = self.compute_next_velocity(
+                        current_vel=current_vel,
+                        desired_vel=desired_vel,
+                        v_max=self.motion_constraints[self.ActuatorType.VELOCITY],
+                        a_max=self.motion_constraints[self.ActuatorType.ACCELERATION],
+                    )
                 case _:
                     raise ValueError(f"ActuatorType {self.actuator_type.name} not implemented")
 
@@ -690,6 +670,35 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
             next_derivs_new[mask_norm] = (next_values[mask_norm] - current_values[mask_norm]) / self.cycle_time
 
         return next_values, next_derivs_new
+
+    def compute_next_velocity(self, current_vel: np.ndarray, desired_vel: np.ndarray, v_max: float, a_max: float) -> np.ndarray:
+        """Compute the next velocity for a mover given the current velocity, desired velocity, and motion constraints.
+        This method calculates the acceleration required to reach the desired velocity, clips the acceleration to the defined maximum,
+        updates the velocity accordingly and then clips the resulting velocity to the defined maximum velocity.
+
+        :param current_vel: The current velocity of the mover as a numpy array of shape (2,)
+        :param desired_vel: The desired velocity of the mover as a numpy array of shape (2,)
+        :param v_max: The maximum allowed velocity (float)
+        :param a_max: The maximum allowed acceleration (float)
+        :return: The next velocity as a numpy array of shape (1, 2)
+        """
+        # compute acceleration to reach desired velocity
+        desired_acc = (desired_vel - current_vel) / self.cycle_time
+
+        # clip acceleration (mainly happens when current_vel is close to v_max)
+        acc_norm = np.linalg.norm(desired_acc)
+        if acc_norm > a_max and acc_norm > 0:
+            desired_acc *= a_max / acc_norm
+
+        # update with acceleration within limits
+        next_vel = current_vel + desired_acc * self.cycle_time
+
+        # clip velocity
+        vel_norm = np.linalg.norm(next_vel)
+        if vel_norm > v_max and vel_norm > 0:
+            next_vel *= v_max / vel_norm
+
+        return next_vel.reshape((1, -1))
 
     def _preprocess_info_dict(self, info: np.ndarray | dict[str, any]) -> tuple[int, np.ndarray, np.ndarray]:
         """Extract information about mover collisions, wall collisions and the batch size from the info dictionary.
