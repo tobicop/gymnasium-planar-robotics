@@ -524,18 +524,16 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                         a_max=self.motion_constraints[self.ActuatorType.ACCELERATION],
                     )
                 case self.ActuatorType.POSITION:
+                    v_max = self.motion_constraints[self.ActuatorType.VELOCITY]
+                    a_max = self.motion_constraints[self.ActuatorType.ACCELERATION]
+
                     # simple P-controller, moving to absolute position
-                    kp = 10      # proportional gain
+                    kp = a_max      # proportional gain; a_max ensures maximum allowed acc. and fastest possible response without overshooting
                     current_pos = self.get_mover_qpos(mover_name=mover_name)[:2]
                     error = action[idx_mover] - current_pos
                     desired_vel = kp * error
 
-                    ctrl = self.compute_next_velocity(
-                        current_vel=current_vel,
-                        desired_vel=desired_vel,
-                        v_max=self.motion_constraints[self.ActuatorType.VELOCITY],
-                        a_max=self.motion_constraints[self.ActuatorType.ACCELERATION],
-                    )
+                    ctrl = self.compute_next_velocity(current_vel=current_vel, desired_vel=desired_vel, v_max=v_max, a_max=a_max)
                 case _:
                     raise ValueError(f"ActuatorType {self.actuator_type.name} not implemented")
 
