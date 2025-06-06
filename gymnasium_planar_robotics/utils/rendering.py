@@ -725,6 +725,7 @@ class ManualControl:
         """Overwrite the action for the respective mover(s) with control values from replay and/or manual control.
         If both are active and applied to the same mover, the manual control values have the higher priority.
         Additionally, save the modified action array to the buffer/file, if recording was enabled by the user.
+        Note: For manual position control, use `get_action_manual()` instead as absolute positions are targeted.
 
         :param action_input: A numpy array of shape (num_movers,2) representing the actions for all movers (to be overwritten)
         :return: A numpy array of the same shape as `action_input`, with the actions for the relevant mover(s) overwritten

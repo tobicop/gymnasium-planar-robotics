@@ -221,7 +221,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
 
         # map maximum velocity, acceleration and jerk to actuator type
         self.motion_constraints = {
-            self.ActuatorType.POSITION: 1,
+            self.ActuatorType.POSITION: 1,      # used as direction (per axis) for manual position control
             self.ActuatorType.VELOCITY: v_max,
             self.ActuatorType.ACCELERATION: a_max,
             self.ActuatorType.JERK: j_max,
@@ -249,15 +249,13 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         #TODO: handle torque action space sampling
         if self.actuator_type == self.ActuatorType.POSITION:
             # use absolute position limits (possible mover positions)
-            as_low = self.min_xy_pos
-            as_high = self.max_xy_pos
-            as_shape = (2,)
+            as_low = np.tile(self.min_xy_pos, self.num_movers)
+            as_high = np.tile(self.max_xy_pos, self.num_movers)
         else:
             # use defined motion constraints
             as_low = -self.motion_constraints[self.actuator_type]
             as_high = self.motion_constraints[self.actuator_type]
-            as_shape = (self.num_movers * 2,)
-        self.action_space = gym.spaces.Box(low=as_low, high=as_high, shape=as_shape, dtype='float64')
+        self.action_space = gym.spaces.Box(low=as_low, high=as_high, shape=(self.num_movers * 2,), dtype='float64')
 
         # minimum distance between any two goals
         if self.c_shape == 'circle':
