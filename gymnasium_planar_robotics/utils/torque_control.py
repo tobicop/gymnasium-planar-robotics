@@ -7,10 +7,12 @@ class MoverTorqueController:
     """Controller for applying Cartesian force/torque (wrench) control to a mover body.
     This class generates actuator XML strings for MuJoCo, manages actuator names, and
     computes and applies joint torques based on a desired wrench using the Jacobian.
+    Each mover should have its own instance of this controller.
 
     :param model: mjModel of the MuJoCo environment
     :param mover_joint_name: the name of the joint of the mover in the MuJoCo model
     :param force_limit: optional force limit to ensure minimum and maximum acceleration
+    :param velocity_limit: optional limit for translational velocity
     """
 
     def __init__(
@@ -18,6 +20,7 @@ class MoverTorqueController:
         model: MjModel,
         mover_joint_name: str,
         force_limit: float | None = None,
+        velocity_limit: float | None = None,
     ) -> None:
         self.desired_wrench = np.zeros(6)  # for direct torque input (fx, fy, fz, tx, ty, tz)
         
@@ -27,6 +30,7 @@ class MoverTorqueController:
         self.mover_dofnum = model.body(self.mover_body_id).dofnum[0]
 
         self.force_limit = force_limit
+        self.velocity_limit = velocity_limit
         
     def generate_actuator_xml_string(self, idx_mover: int):
         """Generate an actuator xml string which can be added to the MuJoCo model xml string. This method must be called manually by
@@ -51,8 +55,8 @@ class MoverTorqueController:
         return actuator_xml_str
 
     def update(self, model: MjModel, data: MjData):
-        """Compute and apply joint torques to achieve the desired Cartesian wrench. If a force limit was
-        defined by the user, it will be applied to the translational acceleration here.
+        """Compute and apply joint torques to achieve the desired Cartesian wrench, subject to force or velocity
+        limits defined by the user.
 
         :param model: mjModel of the MuJoCo environment
         :param data: mjData of the MuJoCo environment
@@ -68,12 +72,33 @@ class MoverTorqueController:
         # direct wrench to joint torque via Jacobian
         ctrl = (jac.T @ self.desired_wrench.reshape((6, 1))).flatten()
 
-        # if passed initially, apply acceleration limits to force vector (first 3 components)  # TODO: limit velocity? how?
+        # apply velocity limit (translation) (small overshoot due to simulation effects)
+        if self.velocity_limit is not None:
+            mover_qvel = data.qvel[self.mover_dofadr : self.mover_dofadr + 3]
+            vel_norm = np.linalg.norm(mover_qvel)
+            
+            if vel_norm > self.velocity_limit and vel_norm > 0:
+                # only allow force that reduces velocity magnitude
+                vel_dir = mover_qvel / vel_norm
+                # project force onto velocity direction
+                force_vec = ctrl[:3]
+                force_along_v = np.dot(force_vec, vel_dir)
+                # if force would accelerate further, remove that component
+                if force_along_v > 0:
+                    ctrl[:3] -= force_along_v * vel_dir        
+
+        # apply force (hence acceleration) limit (translation)
         if self.force_limit is not None:
             force_vec = ctrl[:3]
-            norm = np.linalg.norm(force_vec)
-            if norm > self.force_limit and norm > 0:
-                ctrl[:3] = force_vec * (self.force_limit / norm)
+            force_norm = np.linalg.norm(force_vec)
+            if force_norm > self.force_limit and force_norm > 0:
+                ctrl[:3] = force_vec * (self.force_limit / force_norm)
+
+        # apply angular velocity limit (rotation)
+        #TODO: IMPLEMENT
+
+        # apply torque limit (rotation)
+        #TODO: IMPLEMENT
 
         for idx in range(self.mover_dofnum):
             mujoco_utils.set_actuator_ctrl(model, data, actuator_name=self.actuator_names[idx], value=ctrl[idx])

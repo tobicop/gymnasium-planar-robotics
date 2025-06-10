@@ -274,6 +274,7 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
                         model=self.model,
                         mover_joint_name=self.mover_joint_names[idx],
                         force_limit=force_limit,
+                        velocity_limit=v_max,
                     )
                 )
         self.reload_model()     # needed for some proper initialization (see pushing_env)
