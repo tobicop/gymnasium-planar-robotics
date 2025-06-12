@@ -727,7 +727,8 @@ class ManualControl:
         Additionally, save the modified action array to the buffer/file, if recording was enabled by the user.
         Note: For manual position control, use `get_action_manual()` instead as absolute positions are targeted.
 
-        :param action_input: A numpy array of shape (num_movers,2) representing the actions for all movers (to be overwritten)
+        :param action_input: A numpy array of shape (2*num_movers,) or, for torque control, (num_movers,6) representing the
+                             actions for all movers (to be overwritten)
         :return: A numpy array of the same shape as `action_input`, with the actions for the relevant mover(s) overwritten
         """
         if self.viewer.torque_mode:

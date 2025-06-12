@@ -246,7 +246,6 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         )
 
         # action space (for now only used for kinematics, not for dynamics)
-        #TODO: handle torque action space sampling
         if self.actuator_type == self.ActuatorType.POSITION:
             # use absolute position limits (possible mover positions)
             as_low = np.tile(self.min_xy_pos, self.num_movers)
@@ -268,13 +267,32 @@ class CustomTestingEnv(BasicPlanarRoboticsSingleAgentEnv):
         if self.torque_control_mode:
             for idx in range(self.num_movers):
                 mover_mass = self.mover_mass if isinstance(self.mover_mass, float) else self.mover_mass[idx]
-                force_limit = abs(mover_mass * a_max)       # ensures acceleration limit (F = ma)
+                mover_size = 2 * (self.mover_size if self.mover_size.shape == (3,) else self.mover_size[idx])
+                mover_xy_sq_sum = mover_size[0]**2 + mover_size[1]**2      # mover_length² + mover_width²
+
+                # ensure translational acceleration limit (F = ma)
+                force_limit = abs(mover_mass * a_max)
+
+                # ensure tangential acceleration limit <= a_max (for z-rotation, using circumscribed radius of mover)
+                moment_of_inertia = (mover_mass * mover_xy_sq_sum) / 12     # approximating mover by rectangular cuboid
+                radius = np.sqrt(mover_xy_sq_sum) / 2                       # half of mover's diagonal
+                torque_limit = abs((a_max * moment_of_inertia) / radius)    # small overshoot due to mover body approximation
+
+                # ensure rotational velocity limit to match z-rotation limit of 10 Hz
+                ang_velocity_limit = 10 * 2 * np.pi    # [rad/s]
+
+                # ensure x- and y-rotation limit of ±1.5° (avoid touching ground in MuJoCo, XPlanar supports ±5°)
+                angle_xy_limit = np.deg2rad(1.5)
+
                 self.torque_controllers.append(
                     torque_control.MoverTorqueController(
                         model=self.model,
                         mover_joint_name=self.mover_joint_names[idx],
                         force_limit=force_limit,
                         velocity_limit=v_max,
+                        torque_limit=torque_limit,
+                        ang_velocity_z_limit=ang_velocity_limit,
+                        angle_xy_limit=angle_xy_limit
                     )
                 )
         self.reload_model()     # needed for some proper initialization (see pushing_env)
